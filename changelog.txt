@@ -10,11 +10,22 @@
 * Enhancement: Comprehensive documentation for Tax ID feature
 * Enhancement: Smart phone number handling - only include if provided
 * Enhancement: Optimized feature flags following Dodo best practices
+* Enhancement: Better error messages - now shows specific API errors to users
+* Enhancement: API key validation - checks if key is configured before processing
+* Enhancement: Improved error logging for debugging
+* Enhancement: Auto-clear stale product mappings when products not found (404)
+* Enhancement: Webhook fallback - find orders by session_id if payment_id mapping missing
 * Technical: New create_checkout_session() method in API class
 * Technical: Session ID tracking for checkout sessions
 * Technical: Payment ID capture on order received page (capture_payment_id_from_return)
 * Technical: Proper ID mapping for both payments and subscriptions
+* Technical: Enhanced JSON response parsing with error handling
+* Technical: Utility script to clear product mappings (clear-product-mappings.php)
+* Fix: Corrected API endpoint from /checkout-sessions to /checkouts (per official Dodo API)
 * Fix: Webhook processing now works correctly with checkout sessions
+* Fix: Better error handling prevents generic "error processing order" message
+* Fix: Stale product mappings automatically cleared and re-synced
+* Fix: Webhook race condition - now finds orders even if payment_id not yet captured
 
 2025-07-09 - version 0.3.1
 * Fix: use plain permalink structure for webhook url which is more widely supported

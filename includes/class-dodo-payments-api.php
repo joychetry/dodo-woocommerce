@@ -219,17 +219,35 @@ class Dodo_Payments_API
 
         $request['feature_flags'] = $feature_flags;
 
-        $res = $this->post('/checkout-sessions', $request);
+        $res = $this->post('/checkouts', $request);
 
         if (is_wp_error($res)) {
-            throw new Exception("Failed to create checkout session: " . esc_html($res->get_error_message()));
+            $error_msg = $res->get_error_message();
+            error_log('Dodo Payments API Error (checkouts): ' . $error_msg);
+            throw new Exception("Failed to create checkout session: " . esc_html($error_msg));
         }
 
-        if (wp_remote_retrieve_response_code($res) !== 200) {
-            throw new Exception("Failed to create checkout session: " . esc_html($res['body']));
+        $response_code = wp_remote_retrieve_response_code($res);
+        if ($response_code !== 200) {
+            $error_body = wp_remote_retrieve_body($res);
+            error_log('Dodo Payments API Error (checkouts) - Status ' . $response_code . ': ' . $error_body);
+            
+            // Try to parse error message from response
+            $error_data = json_decode($error_body, true);
+            $error_message = isset($error_data['message']) ? $error_data['message'] : $error_body;
+            
+            throw new Exception("Failed to create checkout session (HTTP " . $response_code . "): " . esc_html($error_message));
         }
 
-        return json_decode($res['body'], true);
+        $response_body = wp_remote_retrieve_body($res);
+        $decoded = json_decode($response_body, true);
+        
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('Dodo Payments JSON Error: ' . json_last_error_msg() . ' - Body: ' . $response_body);
+            throw new Exception("Failed to parse checkout session response");
+        }
+        
+        return $decoded;
     }
 
     /**

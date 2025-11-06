@@ -419,6 +419,21 @@ function dodo_payments_init()
 
             public function do_payment($order)
             {
+                // Validate API key is configured
+                if (empty($this->api_key)) {
+                    $mode = $this->testmode ? 'Test' : 'Live';
+                    $error_msg = sprintf(
+                        // translators: %1$s: Mode (Test or Live)
+                        __('Dodo Payments %1$s API Key is not configured. Please configure it in WooCommerce > Settings > Payments > Dodo Payments.', 'dodo-payments-for-woocommerce'),
+                        $mode
+                    );
+                    
+                    $order->add_order_note($error_msg);
+                    wc_add_notice($error_msg, 'error');
+                    
+                    return array('result' => 'failure');
+                }
+                
                 // Check if order contains subscription products
                 $contains_subscription = $this->order_contains_subscription($order);
 
@@ -487,12 +502,27 @@ function dodo_payments_init()
                             );
                     }
                 } catch (Exception $e) {
+                    $error_message = $e->getMessage();
+                    
                     $order->add_order_note(
                         sprintf(
                             // translators: %1$s: Error message
                             __('Dodo Payments Error: %1$s', 'dodo-payments-for-woocommerce'),
-                            $e->getMessage()
+                            $error_message
                         )
+                    );
+                    
+                    // Log the error for debugging
+                    error_log('Dodo Payments Error for Order #' . $order->get_id() . ': ' . $error_message);
+                    
+                    // Show user-friendly error message
+                    wc_add_notice(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Payment processing failed: %1$s', 'dodo-payments-for-woocommerce'),
+                            $error_message
+                        ),
+                        'error'
                     );
 
                     return array('result' => 'failure');
@@ -626,7 +656,12 @@ function dodo_payments_init()
                     if ($dodo_product_id) {
                         $dodo_product = $this->dodo_payments_api->get_product($dodo_product_id);
 
-                        if (!!$dodo_product) {
+                        // If product not found in Dodo (404), clear the stale mapping
+                        if (!$dodo_product) {
+                            error_log("Dodo Payments: Product mapping stale for WC Product #{$local_product_id}, clearing mapping for Dodo Product {$dodo_product_id}");
+                            Dodo_Payments_Product_DB::delete_mapping($local_product_id);
+                            $dodo_product_id = null; // Force re-creation
+                        } else {
                             try {
                                 if ($is_subscription) {
                                     $this->dodo_payments_api->update_subscription_product($dodo_product['product_id'], $product);
@@ -1046,6 +1081,28 @@ function dodo_payments_init()
             {
                 $payment_id = $payload['data']['payment_id'];
                 $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+
+                // Fallback: Try to find order by session_id if payment_id mapping not found
+                // This handles race conditions where webhook arrives before return URL capture
+                if (!$order_id && isset($payload['data']['checkout_session_id'])) {
+                    $session_id = $payload['data']['checkout_session_id'];
+                    error_log("Dodo Payments: Payment ID mapping not found, trying session ID: {$session_id}");
+                    
+                    // Search for order with this session_id in meta
+                    $orders = wc_get_orders(array(
+                        'limit' => 1,
+                        'meta_key' => '_dodo_checkout_session_id',
+                        'meta_value' => $session_id,
+                        'return' => 'ids',
+                    ));
+                    
+                    if (!empty($orders)) {
+                        $order_id = $orders[0];
+                        // Save the payment_id mapping for future webhooks
+                        Dodo_Payments_Payment_DB::save_mapping($order_id, $payment_id);
+                        error_log("Dodo Payments: Found order #{$order_id} via session ID, saved payment mapping");
+                    }
+                }
 
                 if (!$order_id) {
                     error_log('Dodo Payments: Could not find order_id for payment: ' . $payment_id);
