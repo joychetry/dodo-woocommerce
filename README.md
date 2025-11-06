@@ -14,6 +14,9 @@ Dodo Payments for WooCommerce enables you to accept payments from your customers
 - Webhook support for payment status updates
 - Tax category configuration
 - Support for digital products, SaaS, e-books, and EdTech products
+- **Tax ID / VAT Number Collection** - Allow B2B customers to provide their tax identification numbers during checkout
+- Support for WooCommerce Subscriptions
+- Modern Checkout Sessions API integration
 
 ## Requirements
 
@@ -46,6 +49,47 @@ Dodo Payments for WooCommerce enables you to accept payments from your customers
 - **Live Webhook Signing Key**: Required for payment status sync. Generate from Dodo Payments (Live Mode) > Developer > Webhooks
 - **Test API Key**: Optional, for testing payments. Generate from Dodo Payments (Test Mode) > Developer > API Keys
 - **Test Webhook Signing Key**: Optional, for testing payment status sync. Generate from Dodo Payments (Test Mode) > Developer > Webhooks
+
+## Tax ID / VAT Number Collection
+
+The plugin supports collecting Tax ID (VAT) numbers from customers during checkout. This is particularly useful for:
+
+- **B2B transactions** - Businesses can provide their tax identification numbers
+- **Tax compliance** - Required for certain jurisdictions and cross-border transactions
+- **EU VAT regulations** - Companies can provide their VAT numbers for proper tax handling
+
+### Enabling Tax ID Collection
+
+1. Go to WooCommerce > Settings > Payments > Dodo Payments
+2. Find the "Enable Tax ID Collection" setting
+3. Check the box to enable the feature
+4. Save your settings
+
+### How It Works
+
+When Tax ID collection is enabled:
+
+- The plugin uses the modern **Checkout Sessions API** instead of the legacy payment links
+- Customers will see a Tax ID / VAT number field on the Dodo Payments checkout page
+- The field is optional by default, allowing both B2B and B2C customers to complete checkout
+- Tax IDs are securely stored by Dodo Payments and included in payment/subscription records
+- The feature works seamlessly with both one-time payments and subscriptions
+
+### Technical Details
+
+- **API Endpoint**: Uses `/checkout-sessions` instead of `/payments` or `/subscriptions`
+- **Feature Flag**: Sends `feature_flags: { allow_tax_id: true }` in the checkout session request
+- **Backward Compatible**: When disabled, the plugin continues using the legacy payment API
+- **Webhook Handling**: No changes required - checkout sessions fire the same webhook events (payment.succeeded, subscription.active, etc.)
+
+### For Developers
+
+The implementation includes:
+
+- `Dodo_Payments_API::create_checkout_session()` - New method for creating checkout sessions
+- Gateway setting: `enable_tax_id_collection` - Boolean flag to enable/disable the feature
+- Session ID storage: Stored as order meta `_dodo_checkout_session_id` for reference
+- Automatic phone number collection: Also enabled via `allow_phone_number_collection` feature flag
 
 ## Webhook Setup
 

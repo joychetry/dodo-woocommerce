@@ -163,6 +163,76 @@ class Dodo_Payments_API
     }
 
     /**
+     * Creates a checkout session in the Dodo Payments API using WooCommerce order data.
+     *
+     * This method uses the modern Checkout Sessions API which supports advanced features like tax ID collection.
+     * Works for both one-time payments and subscriptions.
+     *
+     * @param WC_Order $order The WooCommerce order to use for checkout details.
+     * @param array{amount: mixed, product_id: string, quantity: mixed}[] $synced_products List of products to include in the checkout.
+     * @param string|null $dodo_discount_code Optional discount code to apply.
+     * @param string $return_url URL to redirect the customer after payment completion.
+     * @param bool $enable_tax_id_collection Whether to enable tax ID collection on the checkout page.
+     * @throws \Exception If the API request fails or returns an error.
+     * @return array{session_id: string, checkout_url: string} The created checkout session's ID and URL.
+     */
+    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false)
+    {
+        // Build customer object - only include phone if provided
+        $customer = array(
+            'email' => $order->get_billing_email(),
+            'name' => trim($order->get_billing_first_name() . ' ' . $order->get_billing_last_name()),
+        );
+
+        // Add phone number only if provided (following Dodo best practices)
+        $phone = $order->get_billing_phone();
+        if (!empty($phone)) {
+            $customer['phone_number'] = $phone;
+        }
+
+        $request = array(
+            'product_cart' => $synced_products,
+            'customer' => $customer,
+            'billing_address' => array(
+                'street' => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
+                'city' => $order->get_billing_city(),
+                'state' => $order->get_billing_state(),
+                'country' => $order->get_billing_country(),
+                'zipcode' => $order->get_billing_postcode(),
+            ),
+            'return_url' => $return_url,
+        );
+
+        // Add discount code if provided
+        if ($dodo_discount_code) {
+            $request['discount_code'] = $dodo_discount_code;
+        }
+
+        // Configure feature flags following Dodo best practices
+        $feature_flags = array(
+            'allow_phone_number_collection' => true, // Always collect phone for better customer data
+        );
+        
+        if ($enable_tax_id_collection) {
+            $feature_flags['allow_tax_id'] = true;
+        }
+
+        $request['feature_flags'] = $feature_flags;
+
+        $res = $this->post('/checkout-sessions', $request);
+
+        if (is_wp_error($res)) {
+            throw new Exception("Failed to create checkout session: " . esc_html($res->get_error_message()));
+        }
+
+        if (wp_remote_retrieve_response_code($res) !== 200) {
+            throw new Exception("Failed to create checkout session: " . esc_html($res['body']));
+        }
+
+        return json_decode($res['body'], true);
+    }
+
+    /**
      * Creates a payment in the Dodo Payments API using WooCommerce order data.
      *
      * Builds a payment request with billing and customer information, a list of synced products, an optional discount code, and a return URL. Returns the payment ID and payment link on success.
