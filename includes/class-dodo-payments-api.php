@@ -173,10 +173,11 @@ class Dodo_Payments_API
      * @param string|null $dodo_discount_code Optional discount code to apply.
      * @param string $return_url URL to redirect the customer after payment completion.
      * @param bool $enable_tax_id_collection Whether to enable tax ID collection on the checkout page.
+     * @param array<string>|null $allowed_payment_method_types Optional array of allowed payment method types. If null, all eligible methods are available.
      * @throws \Exception If the API request fails or returns an error.
      * @return array{session_id: string, checkout_url: string} The created checkout session's ID and URL.
      */
-    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false)
+    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null)
     {
         // Build customer object - only include phone if provided
         $customer = array(
@@ -218,6 +219,11 @@ class Dodo_Payments_API
         }
 
         $request['feature_flags'] = $feature_flags;
+
+        // Add allowed payment method types if specified
+        if ($allowed_payment_method_types !== null && !empty($allowed_payment_method_types)) {
+            $request['allowed_payment_method_types'] = $allowed_payment_method_types;
+        }
 
         $res = $this->post('/checkouts', $request);
 
@@ -900,6 +906,83 @@ class Dodo_Payments_API
         }
 
         return;
+    }
+
+    /**
+     * Retrieves invoice URL for a payment from the Dodo Payments API.
+     *
+     * Note: Documentation states the API returns application/pdf (binary PDF),
+     * but the implementation expects JSON with URL fields. This method handles
+     * both scenarios. If the API actually returns PDF, we'll need to implement
+     * file handling or find an alternative endpoint that returns JSON.
+     *
+     * @param string $payment_id The Dodo Payments payment ID.
+     * @return string|false The invoice URL if found, or false on error.
+     */
+    public function get_payment_invoice($payment_id)
+    {
+        $res = $this->get("/invoices/payments/{$payment_id}");
+
+        if (is_wp_error($res)) {
+            error_log("Dodo Payments: Failed to get invoice for payment ($payment_id): " . $res->get_error_message());
+            return false;
+        }
+
+        $response_code = wp_remote_retrieve_response_code($res);
+        if ($response_code === 404) {
+            error_log("Dodo Payments: Invoice not found for payment ($payment_id)");
+            return false;
+        }
+
+        if ($response_code !== 200) {
+            error_log("Dodo Payments: Failed to get invoice for payment ($payment_id): HTTP $response_code");
+            return false;
+        }
+
+        // Check content type to determine response format
+        $content_type = wp_remote_retrieve_header($res, 'content-type');
+        
+        // If response is PDF (as per documentation), we need to handle it differently
+        if ($content_type && strpos($content_type, 'application/pdf') !== false) {
+            // TODO: Handle PDF response - may need to save to file or use alternative endpoint
+            // For now, log this case for investigation
+            error_log("Dodo Payments: Invoice API returned PDF instead of JSON for payment ($payment_id). Need to implement PDF handling.");
+            return false;
+        }
+
+        // Try to parse as JSON (expected format)
+        $response_body = json_decode(wp_remote_retrieve_body($res), true);
+        
+        if (!is_array($response_body)) {
+            error_log("Dodo Payments: Invalid JSON response for invoice ($payment_id). Content-Type: " . $content_type);
+            return false;
+        }
+        
+        // Check for invoice URL in various possible response formats
+        // Docs show different formats: invoice_pdf_url, pdf_url, invoice_url, url
+        if (isset($response_body['invoice_pdf_url'])) {
+            return $response_body['invoice_pdf_url'];
+        }
+        
+        if (isset($response_body['pdf_url'])) {
+            return $response_body['pdf_url'];
+        }
+        
+        if (isset($response_body['invoice_url'])) {
+            return $response_body['invoice_url'];
+        }
+        
+        if (isset($response_body['url'])) {
+            return $response_body['url'];
+        }
+        
+        // If response contains invoice_pdf field
+        if (isset($response_body['invoice_pdf'])) {
+            return $response_body['invoice_pdf'];
+        }
+        
+        error_log("Dodo Payments: Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
+        return false;
     }
 
     /**
