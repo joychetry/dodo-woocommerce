@@ -39,6 +39,7 @@ require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-payments-cart-exce
 
 require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-payments-api.php';
 require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-standard-webhook.php';
+require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-payments-invoice.php';
 // Create database tables on plugin activation
 register_activation_hook(__FILE__, function () {
     Dodo_Payments_Product_DB::create_table();
@@ -110,6 +111,8 @@ function dodo_payments_init()
                 $this->global_tax_inclusive = 'yes' === $this->get_option('global_tax_inclusive');
                 $this->enable_tax_id_collection = 'yes' === $this->get_option('enable_tax_id_collection');
                 $this->enable_overlay_checkout = 'yes' === $this->get_option('enable_overlay_checkout');
+                // Default to 'yes' for backward compatibility (coupons were always enabled before)
+                $this->enable_coupons = 'yes' === $this->get_option('enable_coupons', 'yes');
 
                 $this->init_form_fields();
                 $this->init_settings();
@@ -125,6 +128,16 @@ function dodo_payments_init()
 
                 // webhook to http://<site-host>/wc-api/dodo_payments
                 add_action('woocommerce_api_' . $this->id, array($this, 'webhook'));
+
+                // Invoice display in My Account
+                add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
+                add_action('init', array($this, 'add_invoice_endpoint'));
+                
+                // Secure PDF invoice serving endpoint
+                add_action('template_redirect', array($this, 'serve_invoice_pdf'), 5);
+
+                // Invoice display in admin (HPOS compatible)
+                add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
 
                 // Overlay checkout scripts
                 add_action('wp_enqueue_scripts', array($this, 'enqueue_overlay_checkout_scripts'));
@@ -220,6 +233,7 @@ function dodo_payments_init()
                 $webhook_help_description = '<p>' .
                     __('Webhook endpoint for Dodo Payments. Use the below URL when generating a webhook signing key on Dodo Payments Dashboard.', 'dodo-payments-for-woocommerce')
                     . '</p><p><code>' . $webhook_url . '</code></p>';
+                ;
 
                 $this->form_fields = array(
                     'enabled' => array(
@@ -324,6 +338,19 @@ function dodo_payments_init()
                         'desc_tip' => false,
                         'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
                     ),
+                    'coupon_settings_title' => array(
+                        'title' => __('Coupon Support', 'dodo-payments-for-woocommerce'),
+                        'type' => 'title',
+                        'description' => __('Configure coupon code synchronization with Dodo Payments.', 'dodo-payments-for-woocommerce'),
+                    ),
+                    'enable_coupons' => array(
+                        'title' => __('Enable Coupon Support', 'dodo-payments-for-woocommerce'),
+                        'type' => 'checkbox',
+                        'label' => __('Sync WooCommerce coupons to Dodo Payments', 'dodo-payments-for-woocommerce'),
+                        'default' => 'yes',
+                        'desc_tip' => false,
+                        'description' => __('When enabled, percentage-based coupon codes from WooCommerce will be automatically synced to Dodo Payments and applied during checkout. Only percentage discount coupons are supported.', 'dodo-payments-for-woocommerce'),
+                    ),
                     'webhook_endpoint' => array(
                         'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
                         'type' => 'title',
@@ -338,7 +365,7 @@ function dodo_payments_init()
                 $order->update_status('pending-payment', __('Awaiting payment via Dodo Payments', 'dodo-payments-for-woocommerce'));
                 wc_reduce_stock_levels($order_id);
 
-                if ($order->get_total() === 0.0 || $order->get_total() === 0) {
+                if ($order->get_total() == 0) {
                     $order->payment_complete();
 
                     WC()->cart->empty_cart();
@@ -351,6 +378,400 @@ function dodo_payments_init()
                 $res = $this->do_payment($order);
                 WC()->cart->empty_cart();
                 return $res;
+            }
+
+            /**
+             * Adds custom endpoint for viewing invoices
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function add_invoice_endpoint()
+            {
+                add_rewrite_endpoint('view-invoice', EP_ROOT | EP_PAGES);
+                add_action('woocommerce_account_view-invoice_endpoint', array($this, 'view_invoice_endpoint_content'));
+            }
+
+            /**
+             * Displays invoice download link on order details page
+             *
+             * @param WC_Order $order The WooCommerce order.
+             * @return void
+             * @since 0.5.0
+             */
+            public function display_invoice_link($order)
+            {
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    return;
+                }
+
+                // Only show for logged-in users who own the order
+                if (!is_user_logged_in() || !current_user_can('view_order', $order->get_id())) {
+                    return;
+                }
+
+                // Initialize invoice helper
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if (!$invoice_url) {
+                    return; // No invoice available
+                }
+
+                // Display invoice link
+                echo '<div class="dodo-payments-invoice-section" style="margin-top: 20px;">';
+                echo '<h3>' . esc_html__('Invoice', 'dodo-payments-for-woocommerce') . '</h3>';
+                echo '<p>';
+                echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button" style="margin-right: 10px;">';
+                echo esc_html__('View Invoice', 'dodo-payments-for-woocommerce');
+                echo '</a>';
+                echo '</p>';
+                echo '</div>';
+            }
+
+            /**
+             * Serves PDF invoice securely with permission checks
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function serve_invoice_pdf()
+            {
+                // Check if this is an invoice request
+                if (!isset($_GET['dodo_invoice']) || empty($_GET['dodo_invoice'])) {
+                    return;
+                }
+
+                $payment_id = sanitize_text_field(wp_unslash($_GET['dodo_invoice']));
+                
+                if (empty($payment_id)) {
+                    status_header(400);
+                    exit;
+                }
+
+                // Find order by payment_id (use original payment_id, not sanitized)
+                $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                
+                if (!$order_id) {
+                    status_header(404);
+                    exit;
+                }
+
+                $order = wc_get_order($order_id);
+                
+                if (!$order) {
+                    status_header(404);
+                    exit;
+                }
+
+                // Verify permissions: user must own the order or be admin
+                $can_view = false;
+                
+                if (is_user_logged_in()) {
+                    // Check if user owns the order
+                    if (current_user_can('view_order', $order_id)) {
+                        $can_view = true;
+                    }
+                    // Check if user is admin/shop manager
+                    if (current_user_can('manage_woocommerce')) {
+                        $can_view = true;
+                    }
+                }
+                
+                if (!$can_view) {
+                    status_header(403);
+                    exit;
+                }
+
+                // Verify this is a Dodo Payments order
+                if ($order->get_payment_method() !== $this->id) {
+                    status_header(403);
+                    exit;
+                }
+
+                // Get PDF file path
+                $upload_dir = wp_upload_dir();
+                if ($upload_dir['error']) {
+                    status_header(500);
+                    exit;
+                }
+
+                // Sanitize payment ID for filename (must match save_pdf_invoice() logic)
+                $sanitized_payment_id = sanitize_file_name($payment_id);
+                $pdf_path = $upload_dir['basedir'] . '/dodo-invoices/' . $sanitized_payment_id . '.pdf';
+
+                if (!file_exists($pdf_path) || !is_readable($pdf_path)) {
+                    // File doesn't exist - try to regenerate from API
+                    $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                    $regenerated_url = $invoice_helper->get_invoice_for_payment($payment_id);
+                    
+                    if ($regenerated_url && strpos($regenerated_url, 'dodo_invoice=' . urlencode($payment_id)) !== false) {
+                        // File should now exist, try again
+                        if (file_exists($pdf_path) && is_readable($pdf_path)) {
+                            // Continue to serve PDF
+                        } else {
+                            status_header(404);
+                            exit;
+                        }
+                    } else {
+                        status_header(404);
+                        exit;
+                    }
+                }
+
+                // Clear any output buffering to ensure headers are sent properly
+                if (ob_get_level()) {
+                    ob_end_clean();
+                }
+
+                // Serve PDF with proper headers
+                header('Content-Type: application/pdf');
+                header('Content-Disposition: inline; filename="invoice-' . esc_attr($sanitized_payment_id) . '.pdf"');
+                header('Content-Length: ' . filesize($pdf_path));
+                header('Cache-Control: private, max-age=3600');
+                
+                // Output PDF content
+                $readfile_result = @readfile($pdf_path);
+                
+                if ($readfile_result === false) {
+                    status_header(500);
+                    exit;
+                }
+                
+                exit;
+            }
+
+            /**
+             * Handles the view-invoice endpoint content
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function view_invoice_endpoint_content()
+            {
+                global $wp;
+                
+                // Get order ID from query var
+                $order_id = isset($wp->query_vars['view-invoice']) ? absint($wp->query_vars['view-invoice']) : 0;
+                
+                if (!$order_id) {
+                    wc_add_notice(__('Invalid order ID.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_page_permalink('myaccount'));
+                    exit;
+                }
+
+                $order = wc_get_order($order_id);
+
+                if (!$order) {
+                    wc_add_notice(__('Order not found.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_page_permalink('myaccount'));
+                    exit;
+                }
+
+                // Verify user owns the order
+                if (!current_user_can('view_order', $order_id)) {
+                    wc_add_notice(__('You do not have permission to view this invoice.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_page_permalink('myaccount'));
+                    exit;
+                }
+
+                // Only allow for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    wc_add_notice(__('This order does not use Dodo Payments.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_account_endpoint_url('orders'));
+                    exit;
+                }
+
+                // Get invoice URL
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if (!$invoice_url) {
+                    wc_add_notice(__('Invoice not available for this order.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect($order->get_view_order_url());
+                    exit;
+                }
+
+                // Redirect to invoice URL
+                wp_safe_redirect($invoice_url);
+                exit;
+            }
+
+            /**
+             * Adds admin hooks for invoice display (HPOS compatible)
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function add_admin_invoice_hooks()
+            {
+                // Only add hooks in admin area
+                if (!is_admin()) {
+                    return;
+                }
+
+                // Check if HPOS is enabled
+                $hpos_enabled = class_exists('\Automattic\WooCommerce\Utilities\OrderUtil') 
+                    && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
+
+                if ($hpos_enabled) {
+                    // HPOS: Add column to orders table
+                    add_filter('manage_woocommerce_page_wc-orders_columns', array($this, 'add_invoice_column'), 20);
+                    add_action('woocommerce_shop_order_list_table_columns', array($this, 'render_invoice_column'), 20);
+                } else {
+                    // Legacy: Add column to orders table
+                    add_filter('manage_shop_order_posts_columns', array($this, 'add_invoice_column'), 20);
+                    add_action('manage_shop_order_posts_custom_column', array($this, 'render_invoice_column_legacy'), 20, 2);
+                }
+
+                // Add invoice section to order edit page (works for both HPOS and legacy)
+                add_action('woocommerce_admin_order_data_after_order_details', array($this, 'display_admin_invoice_section'), 10, 1);
+            }
+
+            /**
+             * Adds invoice column to orders table
+             *
+             * @param array $columns Existing columns.
+             * @return array Modified columns.
+             * @since 0.5.0
+             */
+            public function add_invoice_column($columns)
+            {
+                // Insert invoice column after order number
+                $new_columns = array();
+                foreach ($columns as $key => $value) {
+                    $new_columns[$key] = $value;
+                    if ($key === 'order_number') {
+                        $new_columns['dodo_invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
+                    }
+                }
+                // If order_number doesn't exist, add at the end
+                if (!isset($new_columns['dodo_invoice'])) {
+                    $new_columns['dodo_invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
+                }
+                return $new_columns;
+            }
+
+            /**
+             * Renders invoice column content for HPOS orders table
+             *
+             * @param string $column Column name.
+             * @return void
+             * @since 0.5.0
+             */
+            public function render_invoice_column($column)
+            {
+                if ($column !== 'dodo_invoice') {
+                    return;
+                }
+
+                // Get order from global context (HPOS)
+                // WooCommerce sets $the_order global when rendering each row
+                global $the_order;
+                
+                $order = null;
+                
+                // Try to get order from global first
+                if ($the_order instanceof WC_Order) {
+                    $order = $the_order;
+                } else {
+                    // Fallback: try to get from list table object
+                    global $wp_list_table;
+                    if (isset($wp_list_table) && method_exists($wp_list_table, 'get_current_order')) {
+                        $order = $wp_list_table->get_current_order();
+                    }
+                }
+                
+                if (!$order instanceof WC_Order) {
+                    echo '—';
+                    return;
+                }
+
+                $this->render_invoice_column_content($order);
+            }
+
+            /**
+             * Renders invoice column content for legacy orders table
+             *
+             * @param string $column Column name.
+             * @param int $order_id Order ID.
+             * @return void
+             * @since 0.5.0
+             */
+            public function render_invoice_column_legacy($column, $order_id)
+            {
+                if ($column !== 'dodo_invoice') {
+                    return;
+                }
+
+                $order = wc_get_order($order_id);
+                if (!$order) {
+                    return;
+                }
+
+                $this->render_invoice_column_content($order);
+            }
+
+            /**
+             * Renders invoice column content (shared for HPOS and legacy)
+             *
+             * @param WC_Order $order Order object.
+             * @return void
+             * @since 0.5.0
+             */
+            private function render_invoice_column_content($order)
+            {
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    echo '—';
+                    return;
+                }
+
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if ($invoice_url) {
+                    echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button button-small" title="' . esc_attr__('View Invoice', 'dodo-payments-for-woocommerce') . '">';
+                    echo '<span class="dashicons dashicons-media-document" style="font-size: 16px; line-height: 1.2;"></span>';
+                    echo '</a>';
+                } else {
+                    echo '<span class="dashicons dashicons-minus" style="color: #999;" title="' . esc_attr__('Invoice not available', 'dodo-payments-for-woocommerce') . '"></span>';
+                }
+            }
+
+            /**
+             * Displays invoice section on order edit page (HPOS compatible)
+             *
+             * @param WC_Order $order Order object.
+             * @return void
+             * @since 0.5.0
+             */
+            public function display_admin_invoice_section($order)
+            {
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    return;
+                }
+
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if (!$invoice_url) {
+                    return;
+                }
+
+                ?>
+                <div class="order_data_column" style="clear: both; width: 100%; margin-top: 20px;">
+                    <h3><?php esc_html_e('Dodo Payments Invoice', 'dodo-payments-for-woocommerce'); ?></h3>
+                    <p class="form-field">
+                        <a href="<?php echo esc_url($invoice_url); ?>" target="_blank" class="button button-primary">
+                            <span class="dashicons dashicons-media-document" style="vertical-align: middle; margin-right: 5px;"></span>
+                            <?php esc_html_e('View Invoice', 'dodo-payments-for-woocommerce'); ?>
+                        </a>
+                    </p>
+                </div>
+                <?php
             }
 
             /**
@@ -771,34 +1192,48 @@ function dodo_payments_init()
                     $coupons = $order->get_coupon_codes();
                     $dodo_discount_code = null;
 
-                    if (count($coupons) > 1) {
-                        $message = __('Dodo Payments: Multiple Coupon codes are not supported.', 'dodo-payments-for-woocommerce');
-                        $order->add_order_note($message);
-                        wc_add_notice($message, 'error');
-
-                        return array('result' => 'failure');
-                    }
-
-                    if (count($coupons) == 1) {
-                        $coupon_code = $coupons[0];
-
-                        try {
-                            $dodo_discount_code = $this->sync_coupon($coupon_code);
-                        } catch (Dodo_Payments_Cart_Exception $e) {
-                            wc_add_notice($e->getMessage(), 'error');
+                    // Only process coupons if coupon support is enabled
+                    if ($this->enable_coupons) {
+                        if (count($coupons) > 1) {
+                            $message = __('Dodo Payments: Multiple Coupon codes are not supported.', 'dodo-payments-for-woocommerce');
+                            $order->add_order_note($message);
+                            wc_add_notice($message, 'error');
 
                             return array('result' => 'failure');
-                        } catch (Exception $e) {
+                        }
+
+                        if (count($coupons) == 1) {
+                            $coupon_code = $coupons[0];
+
+                            try {
+                                $dodo_discount_code = $this->sync_coupon($coupon_code);
+                            } catch (Dodo_Payments_Cart_Exception $e) {
+                                wc_add_notice($e->getMessage(), 'error');
+
+                                return array('result' => 'failure');
+                            } catch (Exception $e) {
+                                $order->add_order_note(
+                                    sprintf(
+                                        // translators: %1$s: Error message
+                                        __('Dodo Payments Error: %1$s', 'dodo-payments-for-woocommerce'),
+                                        $e->getMessage()
+                                    )
+                                );
+                                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
+
+                                return array('result' => 'failure');
+                            }
+                        }
+                    } else {
+                        // Coupon support is disabled - log if coupons were applied
+                        if (count($coupons) > 0) {
                             $order->add_order_note(
                                 sprintf(
-                                    // translators: %1$s: Error message
-                                    __('Dodo Payments Error: %1$s', 'dodo-payments-for-woocommerce'),
-                                    $e->getMessage()
+                                    // translators: %1$d: Number of coupons
+                                    __('Dodo Payments: %1$d coupon(s) applied in WooCommerce but not synced to Dodo Payments (coupon support is disabled).', 'dodo-payments-for-woocommerce'),
+                                    count($coupons)
                                 )
                             );
-                            wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
-
-                            return array('result' => 'failure');
                         }
                     }
 
@@ -1014,9 +1449,20 @@ function dodo_payments_init()
 
                         // If product not found in Dodo (404), clear the stale mapping
                         if (!$dodo_product) {
-                            error_log("Dodo Payments: Product mapping stale for WC Product #{$local_product_id}, clearing mapping for Dodo Product {$dodo_product_id}");
+                            $stale_dodo_product_id = $dodo_product_id; // Store before clearing
+                            error_log("Dodo Payments: Auto-recovery - Product mapping stale for WC Product #{$local_product_id} (Dodo Product {$stale_dodo_product_id} not found). Clearing stale mapping and will re-create product on checkout.");
                             Dodo_Payments_Product_DB::delete_mapping($local_product_id);
                             $dodo_product_id = null; // Force re-creation
+                            
+                            // Add order note for transparency
+                            $order->add_order_note(
+                                sprintf(
+                                    // translators: %1$s: WooCommerce product ID, %2$s: Dodo product ID
+                                    __('Auto-recovery: Stale product mapping cleared for WC Product #%1$s (Dodo Product %2$s not found). Product will be re-created automatically.', 'dodo-payments-for-woocommerce'),
+                                    $local_product_id,
+                                    $stale_dodo_product_id
+                                )
+                            );
                         } else {
                             try {
                                 if ($is_subscription) {
@@ -1520,7 +1966,6 @@ function dodo_payments_init()
                             $subscription_id = $payload['data']['subscription_id'];
                             $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
-                            $subscription = null;
                             if (function_exists('wcs_get_subscription')) {
                                 $subscription = wcs_get_subscription($wc_subscription_id);
                             }
