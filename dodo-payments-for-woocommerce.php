@@ -797,11 +797,14 @@ function dodo_payments_init()
                 echo '<div id="buy_as_company_fields">';
                 echo '<h3>' . esc_html__('Buy as Company', 'dodo-payments-for-woocommerce') . '</h3>';
 
-                woocommerce_form_field('buy_as_company_checkbox', array(
-                    'type'  => 'checkbox',
-                    'class' => array('form-row-wide'),
-                    'label' => __('Buy as company', 'dodo-payments-for-woocommerce'),
-                ), $checkout->get_value('buy_as_company_checkbox'));
+                // Add toggle switch for "Buy as company"
+                echo '<div class="form-row form-row-wide dodo-toggle-wrapper">';
+                echo '<label class="dodo-toggle-label">';
+                echo '<input type="checkbox" name="buy_as_company_checkbox" id="buy_as_company_checkbox" class="dodo-toggle-input" value="1" ' . checked($checkout->get_value('buy_as_company_checkbox'), true, false) . '>';
+                echo '<span class="dodo-toggle-slider"></span>';
+                echo '<span class="dodo-toggle-text">' . esc_html__('Buy as company', 'dodo-payments-for-woocommerce') . '</span>';
+                echo '</label>';
+                echo '</div>';
 
                 woocommerce_form_field('custom_company_name', array(
                     'type'        => 'text',
@@ -818,10 +821,56 @@ function dodo_payments_init()
 
                 echo '</div>';
                 
-                // Add inline CSS to initially hide company name field and tax ID info (prevent FOUC)
-                // JavaScript will handle showing them when checkbox is checked
+                // Add inline CSS for toggle switch styling and initially hide company name field
                 echo '<style type="text/css">
-                    #custom_company_name_field { display: none; }
+                    /* Toggle Switch Styles */
+                    .dodo-toggle-wrapper {
+                        margin-bottom: 20px;
+                    }
+                    .dodo-toggle-label {
+                        display: flex;
+                        align-items: center;
+                        cursor: pointer;
+                        user-select: none;
+                    }
+                    .dodo-toggle-text {
+                        margin-left: 12px;
+                    }
+                    .dodo-toggle-input {
+                        position: absolute;
+                        opacity: 0;
+                        width: 0;
+                        height: 0;
+                    }
+                    .dodo-toggle-slider {
+                        position: relative;
+                        display: inline-block;
+                        width: 36px;
+                        height: 20px;
+                        background-color: #ccc;
+                        border-radius: 26px;
+                        transition: background-color 0.3s ease;
+                    }
+                    .dodo-toggle-slider:before {
+                        content: "";
+                        position: absolute;
+                        height: 16px;
+                        width: 16px;
+                        left: 2px;
+                        bottom: 2px;
+                        background-color: white;
+                        border-radius: 50%;
+                        transition: transform 0.3s ease;
+                    }
+                    .dodo-toggle-input:checked + .dodo-toggle-slider {
+                        background-color: #01824c;
+                    }
+                    .dodo-toggle-input:checked + .dodo-toggle-slider:before {
+                        transform: translateX(16px);
+                    }
+                    
+                    /* Hide company name field initially */
+                    #custom_company_name_field { display: none; margin-top: -12px; }
                     .dodo-tax-id-info { display: none; }
                 </style>';
             }
