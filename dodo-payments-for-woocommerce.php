@@ -111,6 +111,8 @@ function dodo_payments_init()
                 $this->global_tax_inclusive = 'yes' === $this->get_option('global_tax_inclusive');
                 $this->enable_tax_id_collection = 'yes' === $this->get_option('enable_tax_id_collection');
                 $this->enable_overlay_checkout = 'yes' === $this->get_option('enable_overlay_checkout');
+                // Default to 'yes' for backward compatibility (coupons were always enabled before)
+                $this->enable_coupons = 'yes' === $this->get_option('enable_coupons', 'yes');
 
                 $this->init_form_fields();
                 $this->init_settings();
@@ -130,6 +132,9 @@ function dodo_payments_init()
                 // Invoice display in My Account
                 add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
                 add_action('init', array($this, 'add_invoice_endpoint'));
+                
+                // Secure PDF invoice serving endpoint
+                add_action('template_redirect', array($this, 'serve_invoice_pdf'), 5);
 
                 // Invoice display in admin (HPOS compatible)
                 add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
@@ -333,6 +338,19 @@ function dodo_payments_init()
                         'desc_tip' => false,
                         'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
                     ),
+                    'coupon_settings_title' => array(
+                        'title' => __('Coupon Support', 'dodo-payments-for-woocommerce'),
+                        'type' => 'title',
+                        'description' => __('Configure coupon code synchronization with Dodo Payments.', 'dodo-payments-for-woocommerce'),
+                    ),
+                    'enable_coupons' => array(
+                        'title' => __('Enable Coupon Support', 'dodo-payments-for-woocommerce'),
+                        'type' => 'checkbox',
+                        'label' => __('Sync WooCommerce coupons to Dodo Payments', 'dodo-payments-for-woocommerce'),
+                        'default' => 'yes',
+                        'desc_tip' => false,
+                        'description' => __('When enabled, percentage-based coupon codes from WooCommerce will be automatically synced to Dodo Payments and applied during checkout. Only percentage discount coupons are supported.', 'dodo-payments-for-woocommerce'),
+                    ),
                     'webhook_endpoint' => array(
                         'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
                         'type' => 'title',
@@ -410,6 +428,118 @@ function dodo_payments_init()
                 echo '</a>';
                 echo '</p>';
                 echo '</div>';
+            }
+
+            /**
+             * Serves PDF invoice securely with permission checks
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function serve_invoice_pdf()
+            {
+                // Check if this is an invoice request
+                if (!isset($_GET['dodo_invoice']) || empty($_GET['dodo_invoice'])) {
+                    return;
+                }
+
+                $payment_id = sanitize_text_field(wp_unslash($_GET['dodo_invoice']));
+                
+                if (empty($payment_id)) {
+                    status_header(400);
+                    exit;
+                }
+
+                // Find order by payment_id (use original payment_id, not sanitized)
+                $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                
+                if (!$order_id) {
+                    status_header(404);
+                    exit;
+                }
+
+                $order = wc_get_order($order_id);
+                
+                if (!$order) {
+                    status_header(404);
+                    exit;
+                }
+
+                // Verify permissions: user must own the order or be admin
+                $can_view = false;
+                
+                if (is_user_logged_in()) {
+                    // Check if user owns the order
+                    if (current_user_can('view_order', $order_id)) {
+                        $can_view = true;
+                    }
+                    // Check if user is admin/shop manager
+                    if (current_user_can('manage_woocommerce')) {
+                        $can_view = true;
+                    }
+                }
+                
+                if (!$can_view) {
+                    status_header(403);
+                    exit;
+                }
+
+                // Verify this is a Dodo Payments order
+                if ($order->get_payment_method() !== $this->id) {
+                    status_header(403);
+                    exit;
+                }
+
+                // Get PDF file path
+                $upload_dir = wp_upload_dir();
+                if ($upload_dir['error']) {
+                    status_header(500);
+                    exit;
+                }
+
+                // Sanitize payment ID for filename (must match save_pdf_invoice() logic)
+                $sanitized_payment_id = sanitize_file_name($payment_id);
+                $pdf_path = $upload_dir['basedir'] . '/dodo-invoices/' . $sanitized_payment_id . '.pdf';
+
+                if (!file_exists($pdf_path) || !is_readable($pdf_path)) {
+                    // File doesn't exist - try to regenerate from API
+                    $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                    $regenerated_url = $invoice_helper->get_invoice_for_payment($payment_id);
+                    
+                    if ($regenerated_url && strpos($regenerated_url, 'dodo_invoice=' . urlencode($payment_id)) !== false) {
+                        // File should now exist, try again
+                        if (file_exists($pdf_path) && is_readable($pdf_path)) {
+                            // Continue to serve PDF
+                        } else {
+                            status_header(404);
+                            exit;
+                        }
+                    } else {
+                        status_header(404);
+                        exit;
+                    }
+                }
+
+                // Clear any output buffering to ensure headers are sent properly
+                if (ob_get_level()) {
+                    ob_end_clean();
+                }
+
+                // Serve PDF with proper headers
+                header('Content-Type: application/pdf');
+                header('Content-Disposition: inline; filename="invoice-' . esc_attr($sanitized_payment_id) . '.pdf"');
+                header('Content-Length: ' . filesize($pdf_path));
+                header('Cache-Control: private, max-age=3600');
+                
+                // Output PDF content
+                $readfile_result = @readfile($pdf_path);
+                
+                if ($readfile_result === false) {
+                    status_header(500);
+                    exit;
+                }
+                
+                exit;
             }
 
             /**
@@ -1062,34 +1192,48 @@ function dodo_payments_init()
                     $coupons = $order->get_coupon_codes();
                     $dodo_discount_code = null;
 
-                    if (count($coupons) > 1) {
-                        $message = __('Dodo Payments: Multiple Coupon codes are not supported.', 'dodo-payments-for-woocommerce');
-                        $order->add_order_note($message);
-                        wc_add_notice($message, 'error');
-
-                        return array('result' => 'failure');
-                    }
-
-                    if (count($coupons) == 1) {
-                        $coupon_code = $coupons[0];
-
-                        try {
-                            $dodo_discount_code = $this->sync_coupon($coupon_code);
-                        } catch (Dodo_Payments_Cart_Exception $e) {
-                            wc_add_notice($e->getMessage(), 'error');
+                    // Only process coupons if coupon support is enabled
+                    if ($this->enable_coupons) {
+                        if (count($coupons) > 1) {
+                            $message = __('Dodo Payments: Multiple Coupon codes are not supported.', 'dodo-payments-for-woocommerce');
+                            $order->add_order_note($message);
+                            wc_add_notice($message, 'error');
 
                             return array('result' => 'failure');
-                        } catch (Exception $e) {
+                        }
+
+                        if (count($coupons) == 1) {
+                            $coupon_code = $coupons[0];
+
+                            try {
+                                $dodo_discount_code = $this->sync_coupon($coupon_code);
+                            } catch (Dodo_Payments_Cart_Exception $e) {
+                                wc_add_notice($e->getMessage(), 'error');
+
+                                return array('result' => 'failure');
+                            } catch (Exception $e) {
+                                $order->add_order_note(
+                                    sprintf(
+                                        // translators: %1$s: Error message
+                                        __('Dodo Payments Error: %1$s', 'dodo-payments-for-woocommerce'),
+                                        $e->getMessage()
+                                    )
+                                );
+                                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
+
+                                return array('result' => 'failure');
+                            }
+                        }
+                    } else {
+                        // Coupon support is disabled - log if coupons were applied
+                        if (count($coupons) > 0) {
                             $order->add_order_note(
                                 sprintf(
-                                    // translators: %1$s: Error message
-                                    __('Dodo Payments Error: %1$s', 'dodo-payments-for-woocommerce'),
-                                    $e->getMessage()
+                                    // translators: %1$d: Number of coupons
+                                    __('Dodo Payments: %1$d coupon(s) applied in WooCommerce but not synced to Dodo Payments (coupon support is disabled).', 'dodo-payments-for-woocommerce'),
+                                    count($coupons)
                                 )
                             );
-                            wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
-
-                            return array('result' => 'failure');
                         }
                     }
 
@@ -1305,9 +1449,20 @@ function dodo_payments_init()
 
                         // If product not found in Dodo (404), clear the stale mapping
                         if (!$dodo_product) {
-                            error_log("Dodo Payments: Product mapping stale for WC Product #{$local_product_id}, clearing mapping for Dodo Product {$dodo_product_id}");
+                            $stale_dodo_product_id = $dodo_product_id; // Store before clearing
+                            error_log("Dodo Payments: Auto-recovery - Product mapping stale for WC Product #{$local_product_id} (Dodo Product {$stale_dodo_product_id} not found). Clearing stale mapping and will re-create product on checkout.");
                             Dodo_Payments_Product_DB::delete_mapping($local_product_id);
                             $dodo_product_id = null; // Force re-creation
+                            
+                            // Add order note for transparency
+                            $order->add_order_note(
+                                sprintf(
+                                    // translators: %1$s: WooCommerce product ID, %2$s: Dodo product ID
+                                    __('Auto-recovery: Stale product mapping cleared for WC Product #%1$s (Dodo Product %2$s not found). Product will be re-created automatically.', 'dodo-payments-for-woocommerce'),
+                                    $local_product_id,
+                                    $stale_dodo_product_id
+                                )
+                            );
                         } else {
                             try {
                                 if ($is_subscription) {

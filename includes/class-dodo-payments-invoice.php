@@ -39,6 +39,8 @@ class Dodo_Payments_Invoice
         // Check if invoice URL is already cached
         $cached_url = $order->get_meta('_dodo_invoice_url');
         if (!empty($cached_url)) {
+            // Verify the cached URL points to a valid endpoint
+            // (The endpoint will verify file existence and permissions)
             return $cached_url;
         }
 

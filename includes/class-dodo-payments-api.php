@@ -453,7 +453,10 @@ class Dodo_Payments_API
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Product ($dodo_product_id) not found: " . $res['body']);
+            // Log at debug level since this is handled automatically by stale mapping detection
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log("Dodo Payments: Product ($dodo_product_id) not found (will auto-clear stale mapping if needed): " . $res['body']);
+            }
             return false;
         }
 
@@ -961,10 +964,10 @@ class Dodo_Payments_API
     /**
      * Retrieves invoice URL for a payment from the Dodo Payments API.
      *
-     * Note: Documentation states the API returns application/pdf (binary PDF),
-     * but the implementation expects JSON with URL fields. This method handles
-     * both scenarios. If the API actually returns PDF, we'll need to implement
-     * file handling or find an alternative endpoint that returns JSON.
+     * The API returns a PDF file (application/pdf) directly. This method:
+     * 1. Downloads the PDF from the API
+     * 2. Saves it to WordPress uploads directory
+     * 3. Returns a secure endpoint URL that serves the PDF with permission checks
      *
      * @param string $payment_id The Dodo Payments payment ID.
      * @return string|false The invoice URL if found, or false on error.
@@ -992,47 +995,141 @@ class Dodo_Payments_API
         // Check content type to determine response format
         $content_type = wp_remote_retrieve_header($res, 'content-type');
         
-        // If response is PDF (as per documentation), we need to handle it differently
+        // Handle PDF response (as per Dodo Payments API documentation)
         if ($content_type && strpos($content_type, 'application/pdf') !== false) {
-            // TODO: Handle PDF response - may need to save to file or use alternative endpoint
-            // For now, log this case for investigation
-            error_log("Dodo Payments: Invoice API returned PDF instead of JSON for payment ($payment_id). Need to implement PDF handling.");
+            // Check Content-Length header to prevent memory issues with very large PDFs
+            $content_length = wp_remote_retrieve_header($res, 'content-length');
+            $max_size = 50 * 1024 * 1024; // 50MB limit
+            
+            if ($content_length && intval($content_length) > $max_size) {
+                error_log("Dodo Payments: Invoice PDF too large for payment ($payment_id): {$content_length} bytes");
+                return false;
+            }
+            
+            $pdf_content = wp_remote_retrieve_body($res);
+            
+            // Verify we actually got PDF content (check for PDF magic bytes)
+            if (substr($pdf_content, 0, 4) !== '%PDF') {
+                error_log("Dodo Payments: Invalid PDF content for payment ($payment_id)");
+                return false;
+            }
+            
+            return $this->save_pdf_invoice($payment_id, $pdf_content);
+        }
+
+        // Try to parse as JSON (fallback for potential alternative response formats)
+        $response_body = json_decode(wp_remote_retrieve_body($res), true);
+        
+        if (is_array($response_body)) {
+            // Check for invoice URL in various possible response formats
+            if (isset($response_body['invoice_pdf_url'])) {
+                return $response_body['invoice_pdf_url'];
+            }
+            
+            if (isset($response_body['pdf_url'])) {
+                return $response_body['pdf_url'];
+            }
+            
+            if (isset($response_body['invoice_url'])) {
+                return $response_body['invoice_url'];
+            }
+            
+            if (isset($response_body['url'])) {
+                return $response_body['url'];
+            }
+            
+            if (isset($response_body['invoice_pdf'])) {
+                return $response_body['invoice_pdf'];
+            }
+        }
+        
+        error_log("Dodo Payments: Invoice response for payment ($payment_id) is not PDF and does not contain expected URL fields. Content-Type: " . $content_type);
+        return false;
+    }
+
+    /**
+     * Saves PDF invoice to WordPress uploads directory and returns secure endpoint URL.
+     *
+     * @param string $payment_id The Dodo Payments payment ID.
+     * @param string $pdf_content The PDF file content (binary).
+     * @return string|false The secure invoice URL, or false on error.
+     */
+    private function save_pdf_invoice($payment_id, $pdf_content)
+    {
+        // Get WordPress uploads directory
+        $upload_dir = wp_upload_dir();
+        
+        if ($upload_dir['error']) {
+            error_log("Dodo Payments: Failed to get upload directory: " . $upload_dir['error']);
             return false;
         }
 
-        // Try to parse as JSON (expected format)
-        $response_body = json_decode(wp_remote_retrieve_body($res), true);
+        // Create dodo-invoices subdirectory if it doesn't exist
+        $invoice_dir = $upload_dir['basedir'] . '/dodo-invoices';
         
-        if (!is_array($response_body)) {
-            error_log("Dodo Payments: Invalid JSON response for invoice ($payment_id). Content-Type: " . $content_type);
+        if (!file_exists($invoice_dir)) {
+            wp_mkdir_p($invoice_dir);
+            
+            // Add .htaccess to protect directory (if Apache)
+            $htaccess_file = $invoice_dir . '/.htaccess';
+            if (!file_exists($htaccess_file)) {
+                file_put_contents($htaccess_file, "deny from all\n");
+            }
+        }
+
+        // Sanitize payment ID for filename
+        $sanitized_payment_id = sanitize_file_name($payment_id);
+        $pdf_filename = $sanitized_payment_id . '.pdf';
+        $pdf_path = $invoice_dir . '/' . $pdf_filename;
+
+        // Check if PDF already exists (avoid re-downloading)
+        if (file_exists($pdf_path) && is_readable($pdf_path)) {
+            // Return secure endpoint URL
+            return add_query_arg(
+                array(
+                    'dodo_invoice' => $payment_id,
+                ),
+                home_url('/')
+            );
+        }
+
+        // Save PDF file using temporary file and atomic rename to prevent corruption
+        $temp_path = $pdf_path . '.tmp';
+        $saved = @file_put_contents($temp_path, $pdf_content, LOCK_EX);
+        
+        if ($saved === false) {
+            // Clean up temp file if it exists
+            if (file_exists($temp_path)) {
+                @unlink($temp_path);
+            }
+            error_log("Dodo Payments: Failed to save invoice PDF for payment ($payment_id)");
             return false;
         }
-        
-        // Check for invoice URL in various possible response formats
-        // Docs show different formats: invoice_pdf_url, pdf_url, invoice_url, url
-        if (isset($response_body['invoice_pdf_url'])) {
-            return $response_body['invoice_pdf_url'];
+
+        // Verify the saved file is valid PDF
+        if (filesize($temp_path) === 0 || substr(file_get_contents($temp_path, false, null, 0, 4), 0, 4) !== '%PDF') {
+            @unlink($temp_path);
+            error_log("Dodo Payments: Saved PDF file is invalid for payment ($payment_id)");
+            return false;
         }
-        
-        if (isset($response_body['pdf_url'])) {
-            return $response_body['pdf_url'];
+
+        // Atomically rename temp file to final location
+        if (!@rename($temp_path, $pdf_path)) {
+            @unlink($temp_path);
+            error_log("Dodo Payments: Failed to move invoice PDF to final location for payment ($payment_id)");
+            return false;
         }
-        
-        if (isset($response_body['invoice_url'])) {
-            return $response_body['invoice_url'];
-        }
-        
-        if (isset($response_body['url'])) {
-            return $response_body['url'];
-        }
-        
-        // If response contains invoice_pdf field
-        if (isset($response_body['invoice_pdf'])) {
-            return $response_body['invoice_pdf'];
-        }
-        
-        error_log("Dodo Payments: Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
-        return false;
+
+        // Set proper file permissions (readable by web server, not publicly accessible)
+        @chmod($pdf_path, 0644);
+
+        // Return secure endpoint URL (will be handled by rewrite endpoint)
+        return add_query_arg(
+            array(
+                'dodo_invoice' => $payment_id,
+            ),
+            home_url('/')
+        );
     }
 
     /**
