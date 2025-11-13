@@ -795,14 +795,12 @@ function dodo_payments_init()
                 $checkout = WC()->checkout();
                 
                 echo '<div id="buy_as_company_fields">';
-                echo '<h3>' . esc_html__('Buy as Company', 'dodo-payments-for-woocommerce') . '</h3>';
-
                 // Add toggle switch for "Buy as company"
                 echo '<div class="form-row form-row-wide dodo-toggle-wrapper">';
                 echo '<label class="dodo-toggle-label">';
                 echo '<input type="checkbox" name="buy_as_company_checkbox" id="buy_as_company_checkbox" class="dodo-toggle-input" value="1" ' . checked($checkout->get_value('buy_as_company_checkbox'), true, false) . '>';
                 echo '<span class="dodo-toggle-slider"></span>';
-                echo '<span class="dodo-toggle-text">' . esc_html__('Buy as company', 'dodo-payments-for-woocommerce') . '</span>';
+                echo '<span class="dodo-toggle-text">' . esc_html__('Purchasing as a business', 'dodo-payments-for-woocommerce') . '</span>';
                 echo '</label>';
                 echo '</div>';
 
@@ -815,8 +813,8 @@ function dodo_payments_init()
                 ), $checkout->get_value('custom_company_name'));
 
                 // Add informational text about tax ID
-                echo '<p class="form-row form-row-wide dodo-tax-id-info" style="font-size: 0.9em; color: #666; margin-top: -10px; margin-bottom: 15px;">';
-                echo esc_html__('You can enter your Tax ID on the payment page by selecting "Purchasing as a business"', 'dodo-payments-for-woocommerce');
+                echo '<p class="form-row form-row-wide dodo-tax-id-info" style="font-size: 0.9em; margin-top: -10px; margin-bottom: 15px;">';
+                echo esc_html__('You can enter your Tax ID on the payment page by selecting "Purchasing as a business".', 'dodo-payments-for-woocommerce');
                 echo '</p>';
 
                 echo '</div>';
