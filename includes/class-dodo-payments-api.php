@@ -179,10 +179,35 @@ class Dodo_Payments_API
      */
     public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null)
     {
+        // Get company name information
+        $default_company_name = $order->get_billing_company();
+        $custom_company_name = $order->get_meta('_custom_company_name');
+        $buy_as_company = $order->get_meta('_buy_as_company_checkbox') === 'yes';
+        
+        // Determine final company name to use
+        // Priority: default billing company > custom company name (if buy_as_company is checked)
+        $company_name = $default_company_name;
+        if (empty($company_name) && $buy_as_company && !empty($custom_company_name)) {
+            $company_name = $custom_company_name;
+        }
+        
+        // Get contact person name (billing first and last name)
+        $contact_person = trim($order->get_billing_first_name() . ' ' . $order->get_billing_last_name());
+        
+        // Use company name as customer.name if available, otherwise fallback to contact person
+        $customer_name = !empty($company_name) ? $company_name : $contact_person;
+        
+        // Get tax ID if available
+        $tax_id = $order->get_meta('_billing_tax_id');
+        if (empty($tax_id)) {
+            // Try alternative meta key formats
+            $tax_id = $order->get_meta('billing_tax_id');
+        }
+        
         // Build customer object - only include phone if provided
         $customer = array(
             'email' => $order->get_billing_email(),
-            'name' => trim($order->get_billing_first_name() . ' ' . $order->get_billing_last_name()),
+            'name' => $customer_name,
         );
 
         // Add phone number only if provided (following Dodo best practices)
@@ -219,6 +244,31 @@ class Dodo_Payments_API
         }
 
         $request['feature_flags'] = $feature_flags;
+
+        // Add metadata with company information
+        // Note: All metadata values must be strings per Dodo Payments API requirements
+        $metadata = array(
+            'wc_order_id' => (string) $order->get_id(),
+        );
+        
+        // Add company-related metadata
+        if (!empty($company_name)) {
+            $metadata['wc_company'] = (string) $company_name;
+        }
+        
+        if (!empty($contact_person)) {
+            $metadata['wc_contact_person'] = (string) $contact_person;
+        }
+        
+        if (!empty($tax_id)) {
+            $metadata['wc_tax_id'] = (string) $tax_id;
+        }
+        
+        if ($buy_as_company) {
+            $metadata['buy_as_company'] = 'yes';
+        }
+        
+        $request['metadata'] = $metadata;
 
         // Add allowed payment method types if specified
         if ($allowed_payment_method_types !== null && !empty($allowed_payment_method_types)) {

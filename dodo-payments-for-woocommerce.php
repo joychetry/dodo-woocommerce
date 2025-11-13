@@ -5,7 +5,7 @@
  * Plugin URI: https://dodopayments.com
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 0.4.0
+ * Version: 0.4.1
  * Author: Dodo Payments
  * Developer: Dodo Payments
  * Text Domain: dodo-payments-for-woocommerce
@@ -143,6 +143,18 @@ function dodo_payments_init()
                 
                 // Clear session after payment completion
                 add_action('woocommerce_thankyou_' . $this->id, array($this, 'clear_checkout_session_after_payment'), 5);
+
+                // Add "Buy as Company" checkbox and company name field to checkout
+                add_action('woocommerce_after_checkout_billing_form', array($this, 'add_buy_as_company_fields'));
+                
+                // Validate checkout fields
+                add_action('woocommerce_checkout_process', array($this, 'validate_buy_as_company_fields'));
+                
+                // Save checkout fields to order meta
+                add_action('woocommerce_checkout_update_order_meta', array($this, 'save_buy_as_company_fields'));
+                
+                // Enqueue checkout scripts for company fields
+                add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_company_fields_script'));
 
                 // Subscription-related actions
                 if (class_exists('WC_Subscriptions')) {
@@ -769,6 +781,105 @@ function dodo_payments_init()
                 if (WC()->session) {
                     WC()->session->__unset('dodo_checkout_session_url');
                 }
+            }
+
+            /**
+             * Adds "Buy as Company" checkbox and company name field to checkout form
+             *
+             * @return void
+             * @since 0.6.0
+             */
+            public function add_buy_as_company_fields()
+            {
+                // Get checkout object
+                $checkout = WC()->checkout();
+                
+                echo '<div id="buy_as_company_fields">';
+                echo '<h3>' . esc_html__('Buy as Company', 'dodo-payments-for-woocommerce') . '</h3>';
+
+                woocommerce_form_field('buy_as_company_checkbox', array(
+                    'type'  => 'checkbox',
+                    'class' => array('form-row-wide'),
+                    'label' => __('Buy as company', 'dodo-payments-for-woocommerce'),
+                ), $checkout->get_value('buy_as_company_checkbox'));
+
+                woocommerce_form_field('custom_company_name', array(
+                    'type'        => 'text',
+                    'class'       => array('form-row-wide'),
+                    'label'       => __('Company Name', 'dodo-payments-for-woocommerce'),
+                    'required'    => false,
+                    'placeholder' => __('Enter company name', 'dodo-payments-for-woocommerce'),
+                ), $checkout->get_value('custom_company_name'));
+
+                echo '</div>';
+                
+                // Add inline CSS to initially hide company name field (prevent FOUC)
+                // JavaScript will handle showing it when checkbox is checked
+                echo '<style type="text/css">
+                    #custom_company_name_field { display: none; }
+                </style>';
+            }
+
+            /**
+             * Validates "Buy as Company" fields during checkout
+             *
+             * @return void
+             * @since 0.6.0
+             */
+            public function validate_buy_as_company_fields()
+            {
+                $buy_as_company = isset($_POST['buy_as_company_checkbox']) && $_POST['buy_as_company_checkbox'];
+                $custom_company_name = isset($_POST['custom_company_name']) ? sanitize_text_field($_POST['custom_company_name']) : '';
+
+                if ($buy_as_company && empty($custom_company_name)) {
+                    $default_company = isset($_POST['billing_company']) ? sanitize_text_field($_POST['billing_company']) : '';
+                    if (empty($default_company)) {
+                        wc_add_notice(__('Company name is required when "Buy as Company" is checked.', 'dodo-payments-for-woocommerce'), 'error');
+                    }
+                }
+            }
+
+            /**
+             * Saves "Buy as Company" fields to order meta
+             *
+             * @param int $order_id The order ID.
+             * @return void
+             * @since 0.6.0
+             */
+            public function save_buy_as_company_fields($order_id)
+            {
+                $buy_as_company = isset($_POST['buy_as_company_checkbox']) && $_POST['buy_as_company_checkbox'] ? 'yes' : 'no';
+                $custom_company_name = isset($_POST['custom_company_name']) ? sanitize_text_field($_POST['custom_company_name']) : '';
+
+                $order = wc_get_order($order_id);
+                if ($order) {
+                    $order->update_meta_data('_buy_as_company_checkbox', $buy_as_company);
+                    if (!empty($custom_company_name)) {
+                        $order->update_meta_data('_custom_company_name', $custom_company_name);
+                    }
+                    $order->save();
+                }
+            }
+
+            /**
+             * Enqueues JavaScript for company fields toggle functionality
+             *
+             * @return void
+             * @since 0.6.0
+             */
+            public function enqueue_checkout_company_fields_script()
+            {
+                if (!is_checkout()) {
+                    return;
+                }
+
+                wp_enqueue_script(
+                    'dodo-checkout-company-fields',
+                    plugins_url('/assets/js/dodo-checkout-company-fields.js', __FILE__),
+                    array('jquery'),
+                    '0.6.0',
+                    true
+                );
             }
 
             public function thank_you_page()
