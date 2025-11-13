@@ -733,7 +733,7 @@ function dodo_payments_init()
                 // Enqueue our overlay checkout script
                 wp_enqueue_script(
                     'dodo-checkout-overlay',
-                    plugins_url('/assets/js/dodo-checkout-overlay.js', __FILE__),
+                    plugins_url('/assets/js/dodo-checkout-overlay.min.js', __FILE__),
                     array('dodo-payments-checkout-sdk', 'jquery'),
                     '0.5.0',
                     true
@@ -811,12 +811,18 @@ function dodo_payments_init()
                     'placeholder' => __('Enter company name', 'dodo-payments-for-woocommerce'),
                 ), $checkout->get_value('custom_company_name'));
 
+                // Add informational text about tax ID
+                echo '<p class="form-row form-row-wide dodo-tax-id-info" style="font-size: 0.9em; color: #666; margin-top: -10px; margin-bottom: 15px;">';
+                echo esc_html__('You can enter your Tax ID on the payment page by selecting "Purchasing as a business"', 'dodo-payments-for-woocommerce');
+                echo '</p>';
+
                 echo '</div>';
                 
-                // Add inline CSS to initially hide company name field (prevent FOUC)
-                // JavaScript will handle showing it when checkbox is checked
+                // Add inline CSS to initially hide company name field and tax ID info (prevent FOUC)
+                // JavaScript will handle showing them when checkbox is checked
                 echo '<style type="text/css">
                     #custom_company_name_field { display: none; }
+                    .dodo-tax-id-info { display: none; }
                 </style>';
             }
 
@@ -875,7 +881,7 @@ function dodo_payments_init()
 
                 wp_enqueue_script(
                     'dodo-checkout-company-fields',
-                    plugins_url('/assets/js/dodo-checkout-company-fields.js', __FILE__),
+                    plugins_url('/assets/js/dodo-checkout-company-fields.min.js', __FILE__),
                     array('jquery'),
                     '0.6.0',
                     true
