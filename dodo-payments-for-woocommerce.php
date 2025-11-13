@@ -1722,6 +1722,11 @@ function dodo_payments_init()
             /**
              * Handle payment webhook events
              *
+             * Following Dodo Payments best practices for webhook handling:
+             * 1. Check metadata first (most reliable, eliminates race conditions)
+             * 2. Check payment_id mapping (secondary method)
+             * 3. Fallback to session_id search (tertiary method for legacy/edge cases)
+             *
              * @param array $payload
              * @param string $status
              * @return void
@@ -1729,13 +1734,39 @@ function dodo_payments_init()
             private function handle_payment_webhook($payload, $status)
             {
                 $payment_id = $payload['data']['payment_id'];
-                $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                $order_id = null;
+                $order = null; // Will be set if retrieved during metadata check
 
-                // Fallback: Try to find order by session_id if payment_id mapping not found
-                // This handles race conditions where webhook arrives before return URL capture
+                // Method 1: Extract order_id from metadata (most reliable, eliminates race conditions)
+                // Metadata is included in checkout session creation and available in webhook payload
+                if (isset($payload['data']['metadata']['wc_order_id'])) {
+                    $metadata_order_id = absint($payload['data']['metadata']['wc_order_id']);
+                    
+                    // Verify the order exists and is valid
+                    if ($metadata_order_id) {
+                        $order = wc_get_order($metadata_order_id);
+                        if ($order && $order->get_payment_method() === $this->id) {
+                            $order_id = $metadata_order_id;
+                            // Save payment_id mapping for future webhooks (if not already mapped)
+                            $existing_order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                            if (!$existing_order_id) {
+                                Dodo_Payments_Payment_DB::save_mapping($order_id, $payment_id);
+                            }
+                        } else {
+                            $order = null; // Invalid order, continue to next method
+                        }
+                    }
+                }
+
+                // Method 2: Check payment_id mapping (for legacy orders or direct payments)
+                if (!$order_id) {
+                    $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                }
+
+                // Method 3: Fallback to session_id search (handles race conditions)
+                // This should rarely be needed if metadata is properly set
                 if (!$order_id && isset($payload['data']['checkout_session_id'])) {
                     $session_id = $payload['data']['checkout_session_id'];
-                    error_log("Dodo Payments: Payment ID mapping not found, trying session ID: {$session_id}");
                     
                     // Search for order with this session_id in meta
                     $orders = wc_get_orders(array(
@@ -1749,16 +1780,24 @@ function dodo_payments_init()
                         $order_id = $orders[0];
                         // Save the payment_id mapping for future webhooks
                         Dodo_Payments_Payment_DB::save_mapping($order_id, $payment_id);
-                        error_log("Dodo Payments: Found order #{$order_id} via session ID, saved payment mapping");
+                        
+                        // Only log in debug mode to reduce noise
+                        if (defined('WP_DEBUG') && WP_DEBUG) {
+                            error_log("Dodo Payments: Found order #{$order_id} via session ID fallback, saved payment mapping");
+                        }
                     }
                 }
 
+                // Final check: Log error only if order truly cannot be found
                 if (!$order_id) {
-                    error_log('Dodo Payments: Could not find order_id for payment: ' . $payment_id);
+                    error_log('Dodo Payments: Could not find order_id for payment: ' . $payment_id . ' (checked metadata, payment_id mapping, and session_id)');
                     return;
                 }
 
-                $order = wc_get_order($order_id);
+                // Get the order object (reuse if already retrieved from metadata check)
+                if (!$order || $order->get_id() !== $order_id) {
+                    $order = wc_get_order($order_id);
+                }
 
                 if (!$order) {
                     error_log('Dodo Payments: Could not find order: ' . $order_id);

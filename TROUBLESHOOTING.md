@@ -48,6 +48,7 @@ If you want to clear all mappings at once:
 **Symptoms:**
 ```
 Dodo Payments: Could not find order_id for payment: pay_xxxxx
+Dodo Payments: Payment ID mapping not found, trying session ID: cks_xxxxx
 ```
 
 **Causes:**
@@ -58,12 +59,14 @@ Dodo Payments: Could not find order_id for payment: pay_xxxxx
 **Solutions:**
 
 #### Automatic Fix (v0.4.0+)
-The webhook handler now has a fallback mechanism:
-1. First tries to find order by `payment_id` (primary method)
-2. If not found, searches by `checkout_session_id` (fallback)
-3. When found via session ID, saves payment_id mapping for future webhooks
+The webhook handler now uses a three-tier approach following Dodo Payments best practices:
+1. **Primary**: Extracts `order_id` from webhook metadata (`wc_order_id`) - eliminates race conditions
+2. **Secondary**: Checks `payment_id` mapping in database (for legacy orders)
+3. **Tertiary**: Falls back to `checkout_session_id` search (rarely needed)
 
-**This handles race conditions automatically.**
+**This handles race conditions automatically and reduces debug log noise.**
+
+**Note**: The debug logs about "Payment ID mapping not found" are informational and indicate the fallback mechanism is working. These logs only appear when `WP_DEBUG` is enabled. The system will still find and process orders correctly.
 
 #### Manual Verification
 Check if order has session ID stored:
