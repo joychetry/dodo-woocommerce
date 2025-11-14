@@ -219,13 +219,14 @@ class Dodo_Payments_API
         $request = array(
             'product_cart' => $synced_products,
             'customer' => $customer,
-            'billing_address' => array(
-                'street' => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
-                'city' => $order->get_billing_city(),
-                'state' => $order->get_billing_state(),
-                'country' => $order->get_billing_country(),
-                'zipcode' => $order->get_billing_postcode(),
-            ),
+            // Build billing address and remove any empty elements (Dodo recommends omitting unknown fields)
+            'billing_address' => array_filter(array(
+                'street'   => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
+                'city'     => $order->get_billing_city(),
+                'state'    => $order->get_billing_state(), // may be empty; array_filter will remove when blank
+                'country'  => $order->get_billing_country(),
+                'zipcode'  => $order->get_billing_postcode(),
+            )),
             'return_url' => $return_url,
         );
 
@@ -321,13 +322,14 @@ class Dodo_Payments_API
     public function create_payment($order, $synced_products, $dodo_discount_code, $return_url)
     {
         $request = array(
-            'billing' => array(
-                'city' => $order->get_billing_city(),
+            // Build billing address and filter empty values as per Dodo guidelines
+            'billing' => array_filter(array(
+                'city'    => $order->get_billing_city(),
                 'country' => $order->get_billing_country(),
-                'state' => $order->get_billing_state(),
-                'street' => $order->get_billing_address_1() . ' ' . $order->get_billing_address_2(),
+                'state'   => $order->get_billing_state(),
+                'street'  => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
                 'zipcode' => $order->get_billing_postcode(),
-            ),
+            )),
             'customer' => array(
                 'email' => $order->get_billing_email(),
                 'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
@@ -784,13 +786,14 @@ class Dodo_Payments_API
         $first_product = $synced_products[0];
 
         $request = array(
-            'billing' => array(
-                'city' => $order->get_billing_city(),
+            // Build billing address and filter empty values as per Dodo guidelines
+            'billing' => array_filter(array(
+                'city'    => $order->get_billing_city(),
                 'country' => $order->get_billing_country(),
-                'state' => $order->get_billing_state(),
-                'street' => $order->get_billing_address_1() . ' ' . $order->get_billing_address_2(),
+                'state'   => $order->get_billing_state(),
+                'street'  => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
                 'zipcode' => $order->get_billing_postcode(),
-            ),
+            )),
             'customer' => array(
                 'email' => $order->get_billing_email(),
                 'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
