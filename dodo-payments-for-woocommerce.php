@@ -632,16 +632,16 @@ function dodo_payments_init()
                 }
 
                 ?>
-                <div class="order_data_column" style="clear: both; width: 100%; margin-top: 20px;">
-                    <h3><?php esc_html_e('Dodo Payments Invoice', 'dodo-payments-for-woocommerce'); ?></h3>
-                    <p class="form-field">
-                        <a href="<?php echo esc_url($invoice_url); ?>" target="_blank" class="button button-primary">
-                            <span class="dashicons dashicons-media-document" style="vertical-align: middle; margin-right: 5px;"></span>
-                            <?php esc_html_e('View Invoice', 'dodo-payments-for-woocommerce'); ?>
-                        </a>
-                    </p>
-                </div>
-                <?php
+<div class="order_data_column" style="clear: both; width: 100%; margin-top: 20px;">
+    <h3><?php esc_html_e('Dodo Payments Invoice', 'dodo-payments-for-woocommerce'); ?></h3>
+    <p class="form-field">
+        <a href="<?php echo esc_url($invoice_url); ?>" target="_blank" class="button button-primary">
+            <span class="dashicons dashicons-media-document" style="vertical-align: middle; margin-right: 5px;"></span>
+            <?php esc_html_e('View Invoice', 'dodo-payments-for-woocommerce'); ?>
+        </a>
+    </p>
+</div>
+<?php
             }
 
             /**
@@ -814,7 +814,7 @@ function dodo_payments_init()
 
                 // Add informational text about tax ID
                 echo '<p class="form-row form-row-wide dodo-tax-id-info" style="font-size: 0.9em; margin-top: -10px; margin-bottom: 15px;">';
-                echo esc_html__('You can enter your Tax ID on the payment page by selecting "Purchasing as a business".', 'dodo-payments-for-woocommerce');
+                echo esc_html__('Enter company name to wish to see it in the invoice. You can enter your Tax ID VAT/GST on the payment page by selecting "Purchasing as a business".', 'dodo-payments-for-woocommerce');
                 echo '</p>';
 
                 echo '</div>';
