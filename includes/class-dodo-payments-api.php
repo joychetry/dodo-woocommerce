@@ -1076,6 +1076,7 @@ class Dodo_Payments_API
                 'headers' => array(
                     'Authorization' => 'Bearer ' . $this->api_key,
                 ),
+                'timeout' => 15,
             )
         );
     }
@@ -1097,6 +1098,7 @@ class Dodo_Payments_API
                     'Content-Type' => 'application/json',
                 ),
                 'body' => json_encode($body),
+                'timeout' => 15,
             )
         );
     }
@@ -1118,7 +1120,8 @@ class Dodo_Payments_API
                     'Authorization' => 'Bearer ' . $this->api_key,
                     'Content-Type' => 'application/json',
                 ),
-                'body' => json_encode($body)
+                'body' => json_encode($body),
+                'timeout' => 15,
             )
         );
     }
@@ -1141,6 +1144,7 @@ class Dodo_Payments_API
                     'Content-Type' => 'application/json',
                 ),
                 'body' => json_encode($body),
+                'timeout' => 15,
             )
         );
     }
