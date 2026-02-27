@@ -46,6 +46,8 @@ register_activation_hook(__FILE__, function () {
     Dodo_Payments_Payment_DB::create_table();
     Dodo_Payments_Coupon_DB::create_table();
     Dodo_Payments_Subscription_DB::create_table();
+    // Flag to flush rewrite rules on next init
+    update_option('dodo_payments_flush_rewrite_rules', true);
 });
 
 // Make the plugin HPOS compatible
@@ -133,6 +135,11 @@ function dodo_payments_init()
                 // Invoice display in My Account
                 add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
                 add_action('init', array($this, 'add_invoice_endpoint'));
+                add_action('init', array($this, 'maybe_flush_rewrite_rules'));
+
+                // Invoice display in My Account orders table (frontend for customers)
+                add_filter('woocommerce_account_orders_columns', array($this, 'add_myaccount_invoice_column'), 10, 1);
+                add_action('woocommerce_account_orders_column_invoice', array($this, 'render_myaccount_invoice_column'), 10, 1);
 
                 // Invoice display in admin (HPOS compatible)
                 add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
@@ -392,6 +399,20 @@ function dodo_payments_init()
             }
 
             /**
+             * Flushes rewrite rules if flagged on plugin activation
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function maybe_flush_rewrite_rules()
+            {
+                if (get_option('dodo_payments_flush_rewrite_rules')) {
+                    delete_option('dodo_payments_flush_rewrite_rules');
+                    flush_rewrite_rules();
+                }
+            }
+
+            /**
              * Displays invoice download link on order details page
              *
              * @param WC_Order $order The WooCommerce order.
@@ -486,6 +507,60 @@ function dodo_payments_init()
             }
 
             /**
+             * Adds invoice column to My Account orders table
+             *
+             * @param array $columns Existing columns.
+             * @return array Modified columns.
+             * @since 0.5.0
+             */
+            public function add_myaccount_invoice_column($columns)
+            {
+                $columns['invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
+                return $columns;
+            }
+
+            /**
+             * Renders invoice column content in My Account orders table
+             *
+             * Note: This action receives order ID (not WC_Order object) in WooCommerce.
+             *
+             * @param mixed $order_or_order_id The order object or order ID.
+             * @return void
+             * @since 0.5.0
+             */
+            public function render_myaccount_invoice_column($order_or_order_id)
+            {
+                // Handle both order object and order ID for compatibility
+                if (!is_object($order_or_order_id)) {
+                    $order = wc_get_order($order_or_order_id);
+                } else {
+                    $order = $order_or_order_id;
+                }
+
+                if (!$order instanceof WC_Order) {
+                    echo '—';
+                    return;
+                }
+
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    echo '—';
+                    return;
+                }
+
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if ($invoice_url) {
+                    echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button button-small" title="' . esc_attr__('View Invoice', 'dodo-payments-for-woocommerce') . '">';
+                    echo esc_html__('View', 'dodo-payments-for-woocommerce');
+                    echo '</a>';
+                } else {
+                    echo '<span style="color: #999;">' . esc_html__('N/A', 'dodo-payments-for-woocommerce') . '</span>';
+                }
+            }
+
+            /**
              * Adds admin hooks for invoice display (HPOS compatible)
              *
              * @return void
@@ -505,7 +580,7 @@ function dodo_payments_init()
                 if ($hpos_enabled) {
                     // HPOS: Add column to orders table
                     add_filter('manage_woocommerce_page_wc-orders_columns', array($this, 'add_invoice_column'), 20);
-                    add_action('woocommerce_shop_order_list_table_columns', array($this, 'render_invoice_column'), 20);
+                    add_action('woocommerce_shop_order_list_table_column_content', array($this, 'render_invoice_column_hpos'), 20, 2);
                 } else {
                     // Legacy: Add column to orders table
                     add_filter('manage_shop_order_posts_columns', array($this, 'add_invoice_column'), 20);
@@ -543,33 +618,17 @@ function dodo_payments_init()
             /**
              * Renders invoice column content for HPOS orders table
              *
+             * @param WC_Order $order The order object.
              * @param string $column Column name.
              * @return void
              * @since 0.5.0
              */
-            public function render_invoice_column($column)
+            public function render_invoice_column_hpos($order, $column)
             {
                 if ($column !== 'dodo_invoice') {
                     return;
                 }
 
-                // Get order from global context (HPOS)
-                // WooCommerce sets $the_order global when rendering each row
-                global $the_order;
-                
-                $order = null;
-                
-                // Try to get order from global first
-                if ($the_order instanceof WC_Order) {
-                    $order = $the_order;
-                } else {
-                    // Fallback: try to get from list table object
-                    global $wp_list_table;
-                    if (isset($wp_list_table) && method_exists($wp_list_table, 'get_current_order')) {
-                        $order = $wp_list_table->get_current_order();
-                    }
-                }
-                
                 if (!$order instanceof WC_Order) {
                     echo '—';
                     return;
