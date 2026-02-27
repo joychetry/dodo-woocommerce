@@ -2,8 +2,8 @@
 Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
 Requires at least: 6.1
-Tested up to: 6.8
-Stable tag: 0.3.3
+Tested up to: 6.9.1
+Stable tag: 0.4
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,17 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 0.4 =
+* Feature: Add "Purchase as Business" functionality - B2B customers can provide company name for invoices
+* Feature: Add Tax ID/VAT collection support through Dodo Payments checkout
+* Feature: Add Checkout Sessions API integration with overlay checkout mode
+* Feature: Add invoice retrieval and management functionality
+* Enhancement: Improve input sanitization with wp_unslash() for WordPress.org compliance
+* Enhancement: Add nonce verification to custom checkout fields
+* Enhancement: Wrap debug logging in WP_DEBUG conditional
+* Enhancement: Add filter to disable overlay checkout if needed
+* Fix: Omit empty billing fields in API requests to prevent transaction errors
 
 = 0.3.3 =
 * fix: change subscription status to 'on_hold' instead of invalid state of 'paused' when a subscription is paused in woocommerce.

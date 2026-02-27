@@ -29,6 +29,20 @@ class Dodo_Payments_API
     }
 
     /**
+     * Logs debug messages only when WP_DEBUG is enabled
+     *
+     * @param string $message The message to log
+     * @return void
+     * @since 0.4.1
+     */
+    private function log_debug($message)
+    {
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Dodo Payments API: ' . $message);
+        }
+    }
+
+    /**
      * Creates a one-time price product in the Dodo Payments API using WooCommerce product data.
      *
      * Strips HTML from the product description, truncates it to 999 characters, and sends product details including name, price, currency, and tax settings to the API. Throws an exception if the API request fails.
@@ -280,27 +294,27 @@ class Dodo_Payments_API
 
         if (is_wp_error($res)) {
             $error_msg = $res->get_error_message();
-            error_log('Dodo Payments API Error (checkouts): ' . $error_msg);
+            $this->log_debug('API Error (checkouts): ' . $error_msg);
             throw new Exception("Failed to create checkout session: " . esc_html($error_msg));
         }
 
         $response_code = wp_remote_retrieve_response_code($res);
         if ($response_code !== 200) {
             $error_body = wp_remote_retrieve_body($res);
-            error_log('Dodo Payments API Error (checkouts) - Status ' . $response_code . ': ' . $error_body);
-            
+            $this->log_debug('API Error (checkouts) - Status ' . $response_code . ': ' . $error_body);
+
             // Try to parse error message from response
             $error_data = json_decode($error_body, true);
             $error_message = isset($error_data['message']) ? $error_data['message'] : $error_body;
-            
+
             throw new Exception("Failed to create checkout session (HTTP " . $response_code . "): " . esc_html($error_message));
         }
 
         $response_body = wp_remote_retrieve_body($res);
         $decoded = json_decode($response_body, true);
-        
+
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log('Dodo Payments JSON Error: ' . json_last_error_msg() . ' - Body: ' . $response_body);
+            $this->log_debug('JSON Error: ' . json_last_error_msg() . ' - Body: ' . $response_body);
             throw new Exception("Failed to parse checkout session response");
         }
         
@@ -450,12 +464,12 @@ class Dodo_Payments_API
         $res = $this->get("/products/{$dodo_product_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get product ($dodo_product_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get product ($dodo_product_id): " . $res->get_error_message());
             return false;
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Product ($dodo_product_id) not found: " . $res['body']);
+            $this->log_debug("Product ($dodo_product_id) not found: " . $res['body']);
             return false;
         }
 
@@ -487,12 +501,12 @@ class Dodo_Payments_API
         $res = $this->get("/discounts/{$dodo_discount_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get discount code ($dodo_discount_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get discount code ($dodo_discount_id): " . $res->get_error_message());
             return false;
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Discount code ($dodo_discount_id) not found: " . $res['body']);
+            $this->log_debug("Discount code ($dodo_discount_id) not found: " . $res['body']);
             return false;
         }
 
@@ -844,12 +858,12 @@ class Dodo_Payments_API
         $res = $this->get("/subscriptions/{$dodo_subscription_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get subscription ($dodo_subscription_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get subscription ($dodo_subscription_id): " . $res->get_error_message());
             return false;
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Subscription ($dodo_subscription_id) not found: " . $res['body']);
+            $this->log_debug("Subscription ($dodo_subscription_id) not found: " . $res['body']);
             return false;
         }
 
@@ -977,37 +991,37 @@ class Dodo_Payments_API
         $res = $this->get("/invoices/payments/{$payment_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get invoice for payment ($payment_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get invoice for payment ($payment_id): " . $res->get_error_message());
             return false;
         }
 
         $response_code = wp_remote_retrieve_response_code($res);
         if ($response_code === 404) {
-            error_log("Dodo Payments: Invoice not found for payment ($payment_id)");
+            $this->log_debug("Invoice not found for payment ($payment_id)");
             return false;
         }
 
         if ($response_code !== 200) {
-            error_log("Dodo Payments: Failed to get invoice for payment ($payment_id): HTTP $response_code");
+            $this->log_debug("Failed to get invoice for payment ($payment_id): HTTP $response_code");
             return false;
         }
 
         // Check content type to determine response format
         $content_type = wp_remote_retrieve_header($res, 'content-type');
-        
+
         // If response is PDF (as per documentation), we need to handle it differently
         if ($content_type && strpos($content_type, 'application/pdf') !== false) {
             // TODO: Handle PDF response - may need to save to file or use alternative endpoint
             // For now, log this case for investigation
-            error_log("Dodo Payments: Invoice API returned PDF instead of JSON for payment ($payment_id). Need to implement PDF handling.");
+            $this->log_debug("Invoice API returned PDF instead of JSON for payment ($payment_id). Need to implement PDF handling.");
             return false;
         }
 
         // Try to parse as JSON (expected format)
         $response_body = json_decode(wp_remote_retrieve_body($res), true);
-        
+
         if (!is_array($response_body)) {
-            error_log("Dodo Payments: Invalid JSON response for invoice ($payment_id). Content-Type: " . $content_type);
+            $this->log_debug("Invalid JSON response for invoice ($payment_id). Content-Type: " . $content_type);
             return false;
         }
         
@@ -1033,8 +1047,8 @@ class Dodo_Payments_API
         if (isset($response_body['invoice_pdf'])) {
             return $response_body['invoice_pdf'];
         }
-        
-        error_log("Dodo Payments: Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
+
+        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
         return false;
     }
 
