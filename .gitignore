@@ -3,3 +3,5 @@
 build-plugin.sh
 verify-zip.sh
 build/
+.agent
+.claude

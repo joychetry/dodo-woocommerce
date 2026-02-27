@@ -69,6 +69,9 @@ function dodo_payments_init()
         {
             public ?string $instructions;
 
+            // Properties set by parent WC_Payment_Gateway class
+            public $enable_coupons;
+
             private bool $testmode;
             private string $api_key;
             private string $webhook_key;
