@@ -29,6 +29,20 @@ class Dodo_Payments_API
     }
 
     /**
+     * Logs debug messages only when WP_DEBUG is enabled
+     *
+     * @param string $message The message to log
+     * @return void
+     * @since 0.4.1
+     */
+    private function log_debug($message)
+    {
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Dodo Payments API: ' . $message);
+        }
+    }
+
+    /**
      * Creates a one-time price product in the Dodo Payments API using WooCommerce product data.
      *
      * Strips HTML from the product description, truncates it to 999 characters, and sends product details including name, price, currency, and tax settings to the API. Throws an exception if the API request fails.
@@ -163,6 +177,151 @@ class Dodo_Payments_API
     }
 
     /**
+     * Creates a checkout session in the Dodo Payments API using WooCommerce order data.
+     *
+     * This method uses the modern Checkout Sessions API which supports advanced features like tax ID collection.
+     * Works for both one-time payments and subscriptions.
+     *
+     * @param WC_Order $order The WooCommerce order to use for checkout details.
+     * @param array{amount: mixed, product_id: string, quantity: mixed}[] $synced_products List of products to include in the checkout.
+     * @param string|null $dodo_discount_code Optional discount code to apply.
+     * @param string $return_url URL to redirect the customer after payment completion.
+     * @param bool $enable_tax_id_collection Whether to enable tax ID collection on the checkout page.
+     * @param array<string>|null $allowed_payment_method_types Optional array of allowed payment method types. If null, all eligible methods are available.
+     * @throws \Exception If the API request fails or returns an error.
+     * @return array{session_id: string, checkout_url: string} The created checkout session's ID and URL.
+     */
+    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null)
+    {
+        // Get company name information
+        $default_company_name = $order->get_billing_company();
+        $custom_company_name = $order->get_meta('_custom_company_name');
+        $buy_as_company = $order->get_meta('_buy_as_company_checkbox') === 'yes';
+        
+        // Determine final company name to use
+        // Priority: default billing company > custom company name (if buy_as_company is checked)
+        $company_name = $default_company_name;
+        if (empty($company_name) && $buy_as_company && !empty($custom_company_name)) {
+            $company_name = $custom_company_name;
+        }
+        
+        // Get contact person name (billing first and last name)
+        $contact_person = trim($order->get_billing_first_name() . ' ' . $order->get_billing_last_name());
+        
+        // Use company name as customer.name if available, otherwise fallback to contact person
+        $customer_name = !empty($company_name) ? $company_name : $contact_person;
+        
+        // Get tax ID if available
+        $tax_id = $order->get_meta('_billing_tax_id');
+        if (empty($tax_id)) {
+            // Try alternative meta key formats
+            $tax_id = $order->get_meta('billing_tax_id');
+        }
+        
+        // Build customer object - only include phone if provided
+        $customer = array(
+            'email' => $order->get_billing_email(),
+            'name' => $customer_name,
+        );
+
+        // Add phone number only if provided (following Dodo best practices)
+        $phone = $order->get_billing_phone();
+        if (!empty($phone)) {
+            $customer['phone_number'] = $phone;
+        }
+
+        $request = array(
+            'product_cart' => $synced_products,
+            'customer' => $customer,
+            // Build billing address and remove any empty elements (Dodo recommends omitting unknown fields)
+            'billing_address' => array_filter(array(
+                'street'   => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
+                'city'     => $order->get_billing_city(),
+                'state'    => $order->get_billing_state(), // may be empty; array_filter will remove when blank
+                'country'  => $order->get_billing_country(),
+                'zipcode'  => $order->get_billing_postcode(),
+            )),
+            'return_url' => $return_url,
+        );
+
+        // Add discount code if provided
+        if ($dodo_discount_code) {
+            $request['discount_code'] = $dodo_discount_code;
+        }
+
+        // Configure feature flags following Dodo best practices
+        $feature_flags = array(
+            'allow_phone_number_collection' => true, // Always collect phone for better customer data
+        );
+        
+        if ($enable_tax_id_collection) {
+            $feature_flags['allow_tax_id'] = true;
+        }
+
+        $request['feature_flags'] = $feature_flags;
+
+        // Add metadata with company information
+        // Note: All metadata values must be strings per Dodo Payments API requirements
+        $metadata = array(
+            'wc_order_id' => (string) $order->get_id(),
+        );
+        
+        // Add company-related metadata
+        if (!empty($company_name)) {
+            $metadata['wc_company'] = (string) $company_name;
+        }
+        
+        if (!empty($contact_person)) {
+            $metadata['wc_contact_person'] = (string) $contact_person;
+        }
+        
+        if (!empty($tax_id)) {
+            $metadata['wc_tax_id'] = (string) $tax_id;
+        }
+        
+        if ($buy_as_company) {
+            $metadata['buy_as_company'] = 'yes';
+        }
+        
+        $request['metadata'] = $metadata;
+
+        // Add allowed payment method types if specified
+        if ($allowed_payment_method_types !== null && !empty($allowed_payment_method_types)) {
+            $request['allowed_payment_method_types'] = $allowed_payment_method_types;
+        }
+
+        $res = $this->post('/checkouts', $request);
+
+        if (is_wp_error($res)) {
+            $error_msg = $res->get_error_message();
+            $this->log_debug('API Error (checkouts): ' . $error_msg);
+            throw new Exception("Failed to create checkout session: " . esc_html($error_msg));
+        }
+
+        $response_code = wp_remote_retrieve_response_code($res);
+        if ($response_code !== 200) {
+            $error_body = wp_remote_retrieve_body($res);
+            $this->log_debug('API Error (checkouts) - Status ' . $response_code . ': ' . $error_body);
+
+            // Try to parse error message from response
+            $error_data = json_decode($error_body, true);
+            $error_message = isset($error_data['message']) ? $error_data['message'] : $error_body;
+
+            throw new Exception("Failed to create checkout session (HTTP " . $response_code . "): " . esc_html($error_message));
+        }
+
+        $response_body = wp_remote_retrieve_body($res);
+        $decoded = json_decode($response_body, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->log_debug('JSON Error: ' . json_last_error_msg() . ' - Body: ' . $response_body);
+            throw new Exception("Failed to parse checkout session response");
+        }
+        
+        return $decoded;
+    }
+
+    /**
      * Creates a payment in the Dodo Payments API using WooCommerce order data.
      *
      * Builds a payment request with billing and customer information, a list of synced products, an optional discount code, and a return URL. Returns the payment ID and payment link on success.
@@ -177,13 +336,14 @@ class Dodo_Payments_API
     public function create_payment($order, $synced_products, $dodo_discount_code, $return_url)
     {
         $request = array(
-            'billing' => array(
-                'city' => $order->get_billing_city(),
+            // Build billing address and filter empty values as per Dodo guidelines
+            'billing' => array_filter(array(
+                'city'    => $order->get_billing_city(),
                 'country' => $order->get_billing_country(),
-                'state' => $order->get_billing_state(),
-                'street' => $order->get_billing_address_1() . ' ' . $order->get_billing_address_2(),
+                'state'   => $order->get_billing_state(),
+                'street'  => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
                 'zipcode' => $order->get_billing_postcode(),
-            ),
+            )),
             'customer' => array(
                 'email' => $order->get_billing_email(),
                 'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
@@ -304,12 +464,12 @@ class Dodo_Payments_API
         $res = $this->get("/products/{$dodo_product_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get product ($dodo_product_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get product ($dodo_product_id): " . $res->get_error_message());
             return false;
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Product ($dodo_product_id) not found: " . $res['body']);
+            $this->log_debug("Product ($dodo_product_id) not found: " . $res['body']);
             return false;
         }
 
@@ -341,12 +501,12 @@ class Dodo_Payments_API
         $res = $this->get("/discounts/{$dodo_discount_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get discount code ($dodo_discount_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get discount code ($dodo_discount_id): " . $res->get_error_message());
             return false;
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Discount code ($dodo_discount_id) not found: " . $res['body']);
+            $this->log_debug("Discount code ($dodo_discount_id) not found: " . $res['body']);
             return false;
         }
 
@@ -640,13 +800,14 @@ class Dodo_Payments_API
         $first_product = $synced_products[0];
 
         $request = array(
-            'billing' => array(
-                'city' => $order->get_billing_city(),
+            // Build billing address and filter empty values as per Dodo guidelines
+            'billing' => array_filter(array(
+                'city'    => $order->get_billing_city(),
                 'country' => $order->get_billing_country(),
-                'state' => $order->get_billing_state(),
-                'street' => $order->get_billing_address_1() . ' ' . $order->get_billing_address_2(),
+                'state'   => $order->get_billing_state(),
+                'street'  => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
                 'zipcode' => $order->get_billing_postcode(),
-            ),
+            )),
             'customer' => array(
                 'email' => $order->get_billing_email(),
                 'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
@@ -697,12 +858,12 @@ class Dodo_Payments_API
         $res = $this->get("/subscriptions/{$dodo_subscription_id}");
 
         if (is_wp_error($res)) {
-            error_log("Dodo Payments: Failed to get subscription ($dodo_subscription_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get subscription ($dodo_subscription_id): " . $res->get_error_message());
             return false;
         }
 
         if (wp_remote_retrieve_response_code($res) === 404) {
-            error_log("Dodo Payments: Subscription ($dodo_subscription_id) not found: " . $res['body']);
+            $this->log_debug("Subscription ($dodo_subscription_id) not found: " . $res['body']);
             return false;
         }
 
@@ -815,6 +976,83 @@ class Dodo_Payments_API
     }
 
     /**
+     * Retrieves invoice URL for a payment from the Dodo Payments API.
+     *
+     * Note: Documentation states the API returns application/pdf (binary PDF),
+     * but the implementation expects JSON with URL fields. This method handles
+     * both scenarios. If the API actually returns PDF, we'll need to implement
+     * file handling or find an alternative endpoint that returns JSON.
+     *
+     * @param string $payment_id The Dodo Payments payment ID.
+     * @return string|false The invoice URL if found, or false on error.
+     */
+    public function get_payment_invoice($payment_id)
+    {
+        $res = $this->get("/invoices/payments/{$payment_id}");
+
+        if (is_wp_error($res)) {
+            $this->log_debug("Failed to get invoice for payment ($payment_id): " . $res->get_error_message());
+            return false;
+        }
+
+        $response_code = wp_remote_retrieve_response_code($res);
+        if ($response_code === 404) {
+            $this->log_debug("Invoice not found for payment ($payment_id)");
+            return false;
+        }
+
+        if ($response_code !== 200) {
+            $this->log_debug("Failed to get invoice for payment ($payment_id): HTTP $response_code");
+            return false;
+        }
+
+        // Check content type to determine response format
+        $content_type = wp_remote_retrieve_header($res, 'content-type');
+
+        // If response is PDF (as per documentation), we need to handle it differently
+        if ($content_type && strpos($content_type, 'application/pdf') !== false) {
+            // TODO: Handle PDF response - may need to save to file or use alternative endpoint
+            // For now, log this case for investigation
+            $this->log_debug("Invoice API returned PDF instead of JSON for payment ($payment_id). Need to implement PDF handling.");
+            return false;
+        }
+
+        // Try to parse as JSON (expected format)
+        $response_body = json_decode(wp_remote_retrieve_body($res), true);
+
+        if (!is_array($response_body)) {
+            $this->log_debug("Invalid JSON response for invoice ($payment_id). Content-Type: " . $content_type);
+            return false;
+        }
+        
+        // Check for invoice URL in various possible response formats
+        // Docs show different formats: invoice_pdf_url, pdf_url, invoice_url, url
+        if (isset($response_body['invoice_pdf_url'])) {
+            return $response_body['invoice_pdf_url'];
+        }
+        
+        if (isset($response_body['pdf_url'])) {
+            return $response_body['pdf_url'];
+        }
+        
+        if (isset($response_body['invoice_url'])) {
+            return $response_body['invoice_url'];
+        }
+        
+        if (isset($response_body['url'])) {
+            return $response_body['url'];
+        }
+        
+        // If response contains invoice_pdf field
+        if (isset($response_body['invoice_pdf'])) {
+            return $response_body['invoice_pdf'];
+        }
+
+        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
+        return false;
+    }
+
+    /**
      * Converts a WooCommerce subscription period string to the Dodo Payments interval format.
      *
      * Supported values are 'day', 'week', 'month', and 'year'. Returns 'Month' if the input is unrecognized.
@@ -852,6 +1090,7 @@ class Dodo_Payments_API
                 'headers' => array(
                     'Authorization' => 'Bearer ' . $this->api_key,
                 ),
+                'timeout' => 15,
             )
         );
     }
@@ -873,6 +1112,7 @@ class Dodo_Payments_API
                     'Content-Type' => 'application/json',
                 ),
                 'body' => json_encode($body),
+                'timeout' => 15,
             )
         );
     }
@@ -894,7 +1134,8 @@ class Dodo_Payments_API
                     'Authorization' => 'Bearer ' . $this->api_key,
                     'Content-Type' => 'application/json',
                 ),
-                'body' => json_encode($body)
+                'body' => json_encode($body),
+                'timeout' => 15,
             )
         );
     }
@@ -917,6 +1158,7 @@ class Dodo_Payments_API
                     'Content-Type' => 'application/json',
                 ),
                 'body' => json_encode($body),
+                'timeout' => 15,
             )
         );
     }

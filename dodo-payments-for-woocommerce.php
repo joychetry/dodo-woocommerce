@@ -5,7 +5,7 @@
  * Plugin URI: https://dodopayments.com
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 0.3.3
+ * Version: 0.4
  * Author: Dodo Payments
  * Developer: Dodo Payments
  * Text Domain: dodo-payments-for-woocommerce
@@ -16,9 +16,9 @@
  * Requires PHP: 7.4
  * Requires at least: 6.1
  * Requires Plugins: woocommerce
- * Tested up to: 6.8
+ * Tested up to: 6.9.1
  * WC requires at least: 7.9
- * WC tested up to: 9.6
+ * WC tested up to: 10.5.2
  */
 
 if (!defined('ABSPATH')) {
@@ -39,6 +39,7 @@ require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-payments-cart-exce
 
 require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-payments-api.php';
 require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-standard-webhook.php';
+require_once plugin_dir_path(__FILE__) . 'includes/class-dodo-payments-invoice.php';
 // Create database tables on plugin activation
 register_activation_hook(__FILE__, function () {
     Dodo_Payments_Product_DB::create_table();
@@ -76,6 +77,8 @@ function dodo_payments_init()
 
             private string $global_tax_category;
             private bool $global_tax_inclusive;
+            private bool $enable_tax_id_collection;
+            private bool $enable_overlay_checkout;
 
             public function __construct()
             {
@@ -106,6 +109,8 @@ function dodo_payments_init()
 
                 $this->global_tax_category = $this->get_option('global_tax_category');
                 $this->global_tax_inclusive = 'yes' === $this->get_option('global_tax_inclusive');
+                $this->enable_tax_id_collection = 'yes' === $this->get_option('enable_tax_id_collection');
+                $this->enable_overlay_checkout = 'yes' === $this->get_option('enable_overlay_checkout');
 
                 $this->init_form_fields();
                 $this->init_settings();
@@ -116,8 +121,40 @@ function dodo_payments_init()
 
                 add_action('woocommerce_thankyou_' . $this->id, array($this, 'thank_you_page'));
 
+                // Capture payment_id from return URL after checkout session completion
+                add_action('template_redirect', array($this, 'capture_payment_id_from_return'), 10);
+
                 // webhook to http://<site-host>/wc-api/dodo_payments
                 add_action('woocommerce_api_' . $this->id, array($this, 'webhook'));
+
+                // Invoice display in My Account
+                add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
+                add_action('init', array($this, 'add_invoice_endpoint'));
+
+                // Invoice display in admin (HPOS compatible)
+                add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
+
+                // Overlay checkout scripts
+                add_action('wp_enqueue_scripts', array($this, 'enqueue_overlay_checkout_scripts'));
+                
+                // AJAX handler to clear checkout session URL
+                add_action('wp_ajax_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
+                add_action('wp_ajax_nopriv_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
+                
+                // Clear session after payment completion
+                add_action('woocommerce_thankyou_' . $this->id, array($this, 'clear_checkout_session_after_payment'), 5);
+
+                // Add "Buy as Company" checkbox and company name field to checkout
+                add_action('woocommerce_after_checkout_billing_form', array($this, 'add_buy_as_company_fields'));
+                
+                // Validate checkout fields
+                add_action('woocommerce_checkout_process', array($this, 'validate_buy_as_company_fields'));
+                
+                // Save checkout fields to order meta
+                add_action('woocommerce_checkout_update_order_meta', array($this, 'save_buy_as_company_fields'));
+                
+                // Enqueue checkout scripts for company fields
+                add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_company_fields_script'));
 
                 // Subscription-related actions
                 if (class_exists('WC_Subscriptions')) {
@@ -176,6 +213,20 @@ function dodo_payments_init()
                     'global_tax_category' => $this->global_tax_category,
                     'global_tax_inclusive' => $this->global_tax_inclusive,
                 ));
+            }
+
+            /**
+             * Logs debug messages only when WP_DEBUG is enabled
+             *
+             * @param string $message The message to log
+             * @return void
+             * @since 0.4.1
+             */
+            private function log_debug($message)
+            {
+                if (defined('WP_DEBUG') && WP_DEBUG) {
+                    error_log('Dodo Payments: ' . $message);
+                }
             }
 
             /**
@@ -275,6 +326,27 @@ function dodo_payments_init()
                         'desc_tip' => false,
                         'description' => __('Select if tax is included on all product prices. You can override this on a per-product basis on Dodo Payments Dashboard.', 'dodo-payments-for-woocommerce'),
                     ),
+                    'enable_tax_id_collection' => array(
+                        'title' => __('Enable Tax ID Collection', 'dodo-payments-for-woocommerce'),
+                        'type' => 'checkbox',
+                        'label' => __('Allow customers to provide their Tax ID / VAT number during checkout', 'dodo-payments-for-woocommerce'),
+                        'default' => 'no',
+                        'desc_tip' => false,
+                        'description' => __('When enabled, customers will be able to enter their business Tax ID or VAT number on the Dodo Payments checkout page. This is useful for B2B transactions and tax compliance. Uses the modern Checkout Sessions API.', 'dodo-payments-for-woocommerce'),
+                    ),
+                    'overlay_checkout_title' => array(
+                        'title' => __('Overlay Checkout', 'dodo-payments-for-woocommerce'),
+                        'type' => 'title',
+                        'description' => __('Enable embedded checkout overlay for a seamless checkout experience without leaving your site.', 'dodo-payments-for-woocommerce'),
+                    ),
+                    'enable_overlay_checkout' => array(
+                        'title' => __('Enable Overlay Checkout', 'dodo-payments-for-woocommerce'),
+                        'type' => 'checkbox',
+                        'label' => __('Use overlay checkout SDK for embedded checkout experience', 'dodo-payments-for-woocommerce'),
+                        'default' => 'no',
+                        'desc_tip' => false,
+                        'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
+                    ),
                     'webhook_endpoint' => array(
                         'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
                         'type' => 'title',
@@ -304,6 +376,619 @@ function dodo_payments_init()
                 return $res;
             }
 
+            /**
+             * Adds custom endpoint for viewing invoices
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function add_invoice_endpoint()
+            {
+                add_rewrite_endpoint('view-invoice', EP_ROOT | EP_PAGES);
+                add_action('woocommerce_account_view-invoice_endpoint', array($this, 'view_invoice_endpoint_content'));
+            }
+
+            /**
+             * Displays invoice download link on order details page
+             *
+             * @param WC_Order $order The WooCommerce order.
+             * @return void
+             * @since 0.5.0
+             */
+            public function display_invoice_link($order)
+            {
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    return;
+                }
+
+                // Only show for logged-in users who own the order
+                if (!is_user_logged_in() || !current_user_can('view_order', $order->get_id())) {
+                    return;
+                }
+
+                // Initialize invoice helper
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if (!$invoice_url) {
+                    return; // No invoice available
+                }
+
+                // Display invoice link
+                echo '<div class="dodo-payments-invoice-section" style="margin-top: 20px;">';
+                echo '<h3>' . esc_html__('Invoice', 'dodo-payments-for-woocommerce') . '</h3>';
+                echo '<p>';
+                echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button" style="margin-right: 10px;">';
+                echo esc_html__('View Invoice', 'dodo-payments-for-woocommerce');
+                echo '</a>';
+                echo '</p>';
+                echo '</div>';
+            }
+
+            /**
+             * Handles the view-invoice endpoint content
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function view_invoice_endpoint_content()
+            {
+                global $wp;
+                
+                // Get order ID from query var
+                $order_id = isset($wp->query_vars['view-invoice']) ? absint($wp->query_vars['view-invoice']) : 0;
+                
+                if (!$order_id) {
+                    wc_add_notice(__('Invalid order ID.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_page_permalink('myaccount'));
+                    exit;
+                }
+
+                $order = wc_get_order($order_id);
+
+                if (!$order) {
+                    wc_add_notice(__('Order not found.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_page_permalink('myaccount'));
+                    exit;
+                }
+
+                // Verify user owns the order
+                if (!current_user_can('view_order', $order_id)) {
+                    wc_add_notice(__('You do not have permission to view this invoice.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_page_permalink('myaccount'));
+                    exit;
+                }
+
+                // Only allow for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    wc_add_notice(__('This order does not use Dodo Payments.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect(wc_get_account_endpoint_url('orders'));
+                    exit;
+                }
+
+                // Get invoice URL
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if (!$invoice_url) {
+                    wc_add_notice(__('Invoice not available for this order.', 'dodo-payments-for-woocommerce'), 'error');
+                    wp_safe_redirect($order->get_view_order_url());
+                    exit;
+                }
+
+                // Redirect to invoice URL
+                wp_safe_redirect($invoice_url);
+                exit;
+            }
+
+            /**
+             * Adds admin hooks for invoice display (HPOS compatible)
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function add_admin_invoice_hooks()
+            {
+                // Only add hooks in admin area
+                if (!is_admin()) {
+                    return;
+                }
+
+                // Check if HPOS is enabled
+                $hpos_enabled = class_exists('\Automattic\WooCommerce\Utilities\OrderUtil') 
+                    && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
+
+                if ($hpos_enabled) {
+                    // HPOS: Add column to orders table
+                    add_filter('manage_woocommerce_page_wc-orders_columns', array($this, 'add_invoice_column'), 20);
+                    add_action('woocommerce_shop_order_list_table_columns', array($this, 'render_invoice_column'), 20);
+                } else {
+                    // Legacy: Add column to orders table
+                    add_filter('manage_shop_order_posts_columns', array($this, 'add_invoice_column'), 20);
+                    add_action('manage_shop_order_posts_custom_column', array($this, 'render_invoice_column_legacy'), 20, 2);
+                }
+
+                // Add invoice section to order edit page (works for both HPOS and legacy)
+                add_action('woocommerce_admin_order_data_after_order_details', array($this, 'display_admin_invoice_section'), 10, 1);
+            }
+
+            /**
+             * Adds invoice column to orders table
+             *
+             * @param array $columns Existing columns.
+             * @return array Modified columns.
+             * @since 0.5.0
+             */
+            public function add_invoice_column($columns)
+            {
+                // Insert invoice column after order number
+                $new_columns = array();
+                foreach ($columns as $key => $value) {
+                    $new_columns[$key] = $value;
+                    if ($key === 'order_number') {
+                        $new_columns['dodo_invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
+                    }
+                }
+                // If order_number doesn't exist, add at the end
+                if (!isset($new_columns['dodo_invoice'])) {
+                    $new_columns['dodo_invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
+                }
+                return $new_columns;
+            }
+
+            /**
+             * Renders invoice column content for HPOS orders table
+             *
+             * @param string $column Column name.
+             * @return void
+             * @since 0.5.0
+             */
+            public function render_invoice_column($column)
+            {
+                if ($column !== 'dodo_invoice') {
+                    return;
+                }
+
+                // Get order from global context (HPOS)
+                // WooCommerce sets $the_order global when rendering each row
+                global $the_order;
+                
+                $order = null;
+                
+                // Try to get order from global first
+                if ($the_order instanceof WC_Order) {
+                    $order = $the_order;
+                } else {
+                    // Fallback: try to get from list table object
+                    global $wp_list_table;
+                    if (isset($wp_list_table) && method_exists($wp_list_table, 'get_current_order')) {
+                        $order = $wp_list_table->get_current_order();
+                    }
+                }
+                
+                if (!$order instanceof WC_Order) {
+                    echo '—';
+                    return;
+                }
+
+                $this->render_invoice_column_content($order);
+            }
+
+            /**
+             * Renders invoice column content for legacy orders table
+             *
+             * @param string $column Column name.
+             * @param int $order_id Order ID.
+             * @return void
+             * @since 0.5.0
+             */
+            public function render_invoice_column_legacy($column, $order_id)
+            {
+                if ($column !== 'dodo_invoice') {
+                    return;
+                }
+
+                $order = wc_get_order($order_id);
+                if (!$order) {
+                    return;
+                }
+
+                $this->render_invoice_column_content($order);
+            }
+
+            /**
+             * Renders invoice column content (shared for HPOS and legacy)
+             *
+             * @param WC_Order $order Order object.
+             * @return void
+             * @since 0.5.0
+             */
+            private function render_invoice_column_content($order)
+            {
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    echo '—';
+                    return;
+                }
+
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if ($invoice_url) {
+                    echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button button-small" title="' . esc_attr__('View Invoice', 'dodo-payments-for-woocommerce') . '">';
+                    echo '<span class="dashicons dashicons-media-document" style="font-size: 16px; line-height: 1.2;"></span>';
+                    echo '</a>';
+                } else {
+                    echo '<span class="dashicons dashicons-minus" style="color: #999;" title="' . esc_attr__('Invoice not available', 'dodo-payments-for-woocommerce') . '"></span>';
+                }
+            }
+
+            /**
+             * Displays invoice section on order edit page (HPOS compatible)
+             *
+             * @param WC_Order $order Order object.
+             * @return void
+             * @since 0.5.0
+             */
+            public function display_admin_invoice_section($order)
+            {
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    return;
+                }
+
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if (!$invoice_url) {
+                    return;
+                }
+
+                ?>
+<div class="order_data_column" style="clear: both; width: 100%; margin-top: 20px;">
+    <h3><?php esc_html_e('Dodo Payments Invoice', 'dodo-payments-for-woocommerce'); ?></h3>
+    <p class="form-field">
+        <a href="<?php echo esc_url($invoice_url); ?>" target="_blank" class="button button-primary">
+            <span class="dashicons dashicons-media-document" style="vertical-align: middle; margin-right: 5px;"></span>
+            <?php esc_html_e('View Invoice', 'dodo-payments-for-woocommerce'); ?>
+        </a>
+    </p>
+</div>
+<?php
+            }
+
+            /**
+             * Enqueues overlay checkout scripts on checkout page
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function enqueue_overlay_checkout_scripts()
+            {
+                // Only enqueue on checkout page when overlay checkout is enabled
+                if (!is_checkout() || !$this->enable_overlay_checkout) {
+                    return;
+                }
+
+                // Ensure WooCommerce is loaded
+                if (!function_exists('WC') || !WC()->session) {
+                    return;
+                }
+
+                // Check if we have a checkout session URL from multiple sources
+                $checkout_session_url = null;
+                
+                // Priority 1: Check URL parameter (for redirect back to checkout)
+                if (isset($_GET['dodo_checkout_session_url'])) {
+                    $checkout_session_url = sanitize_text_field(wp_unslash($_GET['dodo_checkout_session_url']));
+                    // Store in session for persistence
+                    if ($checkout_session_url && WC()->session) {
+                        WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
+                    }
+                }
+                
+                // Priority 2: Check WooCommerce session (stored during payment processing)
+                if (!$checkout_session_url && WC()->session) {
+                    $checkout_session_url = WC()->session->get('dodo_checkout_session_url');
+                }
+                
+                // Priority 3: Try to get from order being processed
+                if (!$checkout_session_url && WC()->session && WC()->session->get('order_awaiting_payment')) {
+                    $order_id = WC()->session->get('order_awaiting_payment');
+                    $order = wc_get_order($order_id);
+                    if ($order && $order->get_payment_method() === $this->id) {
+                        $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
+                        // Store in session for next page load
+                        if ($checkout_session_url && WC()->session) {
+                            WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
+                        }
+                    }
+                }
+                
+                // Priority 4: Check recent orders for this user (fallback)
+                if (!$checkout_session_url && is_user_logged_in()) {
+                    $recent_orders = wc_get_orders(array(
+                        'customer' => get_current_user_id(),
+                        'limit' => 1,
+                        'orderby' => 'date',
+                        'order' => 'DESC',
+                        'payment_method' => $this->id,
+                        'status' => 'pending',
+                    ));
+                    
+                    if (!empty($recent_orders)) {
+                        $order = reset($recent_orders);
+                        $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
+                        // Store in session for next page load
+                        if ($checkout_session_url && WC()->session) {
+                            WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
+                        }
+                    }
+                }
+
+                if (!$checkout_session_url) {
+                    $this->log_debug('Overlay checkout script not enqueued - no checkout session URL found');
+                    return; // No checkout session URL available
+                }
+
+                /**
+                 * Allow disabling the overlay checkout feature.
+                 *
+                 * By default, the overlay checkout is enabled. Set this filter to false
+                 * to use the traditional redirect-based checkout instead.
+                 *
+                 * @since 0.4.1
+                 * @param bool $enable_overlay Whether to enable overlay checkout. Default true.
+                 */
+                $enable_overlay_checkout = apply_filters('dodo_payments_enable_overlay_checkout', true);
+
+                if (!$enable_overlay_checkout) {
+                    return;
+                }
+
+                // Enqueue Dodo Payments Checkout SDK from official CDN.
+                // This is the official SDK provided by Dodo Payments (the payment processor).
+                // The SDK is required for the overlay checkout functionality to work.
+                // The script is loaded from jsDelivr CDN which is the official distribution channel.
+                // Security: The SDK only communicates with Dodo Payments servers and does not
+                // execute arbitrary code on your site.
+                wp_enqueue_script(
+                    'dodo-payments-checkout-sdk',
+                    'https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js',
+                    array(),
+                    null,
+                    true
+                );
+
+                // Enqueue our overlay checkout script
+                wp_enqueue_script(
+                    'dodo-checkout-overlay',
+                    plugins_url('/assets/js/dodo-checkout-overlay.min.js', __FILE__),
+                    array('dodo-payments-checkout-sdk', 'jquery'),
+                    '0.5.0',
+                    true
+                );
+
+                // Pass data to JavaScript
+                wp_localize_script(
+                    'dodo-checkout-overlay',
+                    'dodoCheckoutOverlay',
+                    array(
+                        'checkoutUrl' => $checkout_session_url,
+                        'mode' => $this->testmode ? 'test' : 'live',
+                        'ajaxUrl' => admin_url('admin-ajax.php'),
+                        'nonce' => wp_create_nonce('dodo_checkout_overlay'),
+                    )
+                );
+            }
+
+            /**
+             * AJAX handler to clear checkout session URL from WooCommerce session
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function ajax_clear_checkout_session()
+            {
+                check_ajax_referer('dodo_checkout_overlay', 'nonce');
+                
+                if (WC()->session) {
+                    WC()->session->__unset('dodo_checkout_session_url');
+                }
+                
+                wp_send_json_success();
+            }
+
+            /**
+             * Clears checkout session URL after payment completion
+             *
+             * @param int $order_id Order ID.
+             * @return void
+             * @since 0.5.0
+             */
+            public function clear_checkout_session_after_payment($order_id)
+            {
+                if (WC()->session) {
+                    WC()->session->__unset('dodo_checkout_session_url');
+                }
+            }
+
+            /**
+             * Adds "Buy as Company" checkbox and company name field to checkout form
+             *
+             * @return void
+             * @since 0.6.0
+             */
+            public function add_buy_as_company_fields()
+            {
+                // Get checkout object
+                $checkout = WC()->checkout();
+                
+                echo '<div id="buy_as_company_fields">';
+                // Add toggle switch for "Buy as company"
+                echo '<div class="form-row form-row-wide dodo-toggle-wrapper">';
+                echo '<label class="dodo-toggle-label">';
+                echo '<input type="checkbox" name="buy_as_company_checkbox" id="buy_as_company_checkbox" class="dodo-toggle-input" value="1" ' . checked($checkout->get_value('buy_as_company_checkbox'), true, false) . '>';
+                echo '<span class="dodo-toggle-slider"></span>';
+                echo '<span class="dodo-toggle-text">' . esc_html__('Purchasing as a business', 'dodo-payments-for-woocommerce') . '</span>';
+                echo '</label>';
+                echo '</div>';
+
+                woocommerce_form_field('custom_company_name', array(
+                    'type'        => 'text',
+                    'class'       => array('form-row-wide'),
+                    'label'       => __('Company Name', 'dodo-payments-for-woocommerce'),
+                    'required'    => false,
+                    'placeholder' => __('Enter company name', 'dodo-payments-for-woocommerce'),
+                ), $checkout->get_value('custom_company_name'));
+
+                // Add informational text about tax ID
+                echo '<p class="form-row form-row-wide dodo-tax-id-info" style="font-size: 0.9em; margin-top: -10px; margin-bottom: 15px;">';
+                echo esc_html__('Enter company name to wish to see it in the invoice. You can enter your Tax ID VAT/GST on the payment page by selecting "Purchasing as a business".', 'dodo-payments-for-woocommerce');
+                echo '</p>';
+
+                echo '</div>';
+
+                // Add nonce for security verification
+                wp_nonce_field('dodo_save_purchase_as_business', 'dodo_purchase_as_business_nonce');
+
+                // Add inline CSS for toggle switch styling and initially hide company name field
+                echo '<style type="text/css">
+                    /* Toggle Switch Styles */
+                    .dodo-toggle-wrapper {
+                        margin-bottom: 20px;
+                    }
+                    .dodo-toggle-label {
+                        display: flex;
+                        align-items: center;
+                        cursor: pointer;
+                        user-select: none;
+                    }
+                    .dodo-toggle-text {
+                        margin-left: 12px;
+                    }
+                    .dodo-toggle-input {
+                        position: absolute;
+                        opacity: 0;
+                        width: 0;
+                        height: 0;
+                    }
+                    .dodo-toggle-slider {
+                        position: relative;
+                        display: inline-block;
+                        width: 36px;
+                        height: 20px;
+                        background-color: #ccc;
+                        border-radius: 26px;
+                        transition: background-color 0.3s ease;
+                    }
+                    .dodo-toggle-slider:before {
+                        content: "";
+                        position: absolute;
+                        height: 16px;
+                        width: 16px;
+                        left: 2px;
+                        bottom: 2px;
+                        background-color: white;
+                        border-radius: 50%;
+                        transition: transform 0.3s ease;
+                    }
+                    .dodo-toggle-input:checked + .dodo-toggle-slider {
+                        background-color: #01824c;
+                    }
+                    .dodo-toggle-input:checked + .dodo-toggle-slider:before {
+                        transform: translateX(16px);
+                    }
+                    
+                    /* Hide company name field initially */
+                    #custom_company_name_field { display: none; margin-top: -12px; }
+                    .dodo-tax-id-info { display: none; }
+                </style>';
+            }
+
+            /**
+             * Validates "Buy as Company" fields during checkout
+             *
+             * @return void
+             * @since 0.6.0
+             */
+            public function validate_buy_as_company_fields()
+            {
+                // Verify nonce for security - fail loudly if missing or invalid
+                if (!isset($_POST['dodo_purchase_as_business_nonce'])) {
+                    wc_add_notice(__('Security verification failed. Please try again.', 'dodo-payments-for-woocommerce'), 'error');
+                    return;
+                }
+
+                $nonce = sanitize_text_field(wp_unslash($_POST['dodo_purchase_as_business_nonce']));
+                if (!wp_verify_nonce($nonce, 'dodo_save_purchase_as_business')) {
+                    wc_add_notice(__('Security verification failed. Please try again.', 'dodo-payments-for-woocommerce'), 'error');
+                    return;
+                }
+
+                $buy_as_company = isset($_POST['buy_as_company_checkbox']) && '1' === sanitize_text_field(wp_unslash($_POST['buy_as_company_checkbox']));
+                $custom_company_name = isset($_POST['custom_company_name']) ? sanitize_text_field(wp_unslash($_POST['custom_company_name'])) : '';
+
+                if ($buy_as_company && empty($custom_company_name)) {
+                    $default_company = isset($_POST['billing_company']) ? sanitize_text_field(wp_unslash($_POST['billing_company'])) : '';
+                    if (empty($default_company)) {
+                        wc_add_notice(__('Company name is required when "Buy as Company" is checked.', 'dodo-payments-for-woocommerce'), 'error');
+                    }
+                }
+            }
+
+            /**
+             * Saves "Buy as Company" fields to order meta
+             *
+             * @param int $order_id The order ID.
+             * @return void
+             * @since 0.6.0
+             */
+            public function save_buy_as_company_fields($order_id)
+            {
+                // Verify nonce for security - log failures for audit
+                if (!isset($_POST['dodo_purchase_as_business_nonce']) ||
+                    !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['dodo_purchase_as_business_nonce'])), 'dodo_save_purchase_as_business')) {
+                    // Log this security event - validation should have caught this first
+                    $this->log_debug('Security: Nonce verification failed in save_buy_as_company_fields for order ' . $order_id);
+                    return;
+                }
+
+                $buy_as_company = isset($_POST['buy_as_company_checkbox']) && '1' === sanitize_text_field(wp_unslash($_POST['buy_as_company_checkbox'])) ? 'yes' : 'no';
+                $custom_company_name = isset($_POST['custom_company_name']) ? sanitize_text_field(wp_unslash($_POST['custom_company_name'])) : '';
+
+                $order = wc_get_order($order_id);
+                if ($order) {
+                    $order->update_meta_data('_buy_as_company_checkbox', $buy_as_company);
+                    if (!empty($custom_company_name)) {
+                        $order->update_meta_data('_custom_company_name', $custom_company_name);
+                    }
+                    $order->save();
+                }
+            }
+
+            /**
+             * Enqueues JavaScript for company fields toggle functionality
+             *
+             * @return void
+             * @since 0.6.0
+             */
+            public function enqueue_checkout_company_fields_script()
+            {
+                if (!is_checkout()) {
+                    return;
+                }
+
+                wp_enqueue_script(
+                    'dodo-checkout-company-fields',
+                    plugins_url('/assets/js/dodo-checkout-company-fields.min.js', __FILE__),
+                    array('jquery'),
+                    '0.6.0',
+                    true
+                );
+            }
+
             public function thank_you_page()
             {
                 if ($this->instructions) {
@@ -311,8 +996,116 @@ function dodo_payments_init()
                 }
             }
 
+            /**
+             * Capture payment ID and subscription ID from return URL after checkout session completion
+             * 
+             * This is essential for checkout sessions flow. When customers complete payment,
+             * Dodo redirects them back with payment_id and status as query parameters.
+             * We need to save this mapping so webhooks can find the order later.
+             * 
+             * Following Dodo Payments best practices for handling return_url parameters.
+             * 
+             * @return void
+             * @since 0.4.0
+             */
+            public function capture_payment_id_from_return()
+            {
+                // Only run on order received page
+                if (!is_wc_endpoint_url('order-received')) {
+                    return;
+                }
+                
+                // Get order ID from URL
+                global $wp;
+                $order_id = absint($wp->query_vars['order-received']);
+                
+                if (!$order_id) {
+                    return;
+                }
+                
+                $order = wc_get_order($order_id);
+                
+                if (!$order || $order->get_payment_method() !== $this->id) {
+                    return;
+                }
+                
+                // Check if this was a checkout session order (has session_id stored)
+                $session_id = $order->get_meta('_dodo_checkout_session_id');
+                
+                if (!$session_id) {
+                    return; // Not a checkout session order, skip
+                }
+                
+                // Get payment_id from URL parameters (Dodo includes this in return_url)
+                // Following Dodo documentation: return_url receives payment_id and status parameters
+                $payment_id = isset($_GET['payment_id']) ? sanitize_text_field(wp_unslash($_GET['payment_id'])) : '';
+                
+                if (!$payment_id) {
+                    return; // No payment_id in URL yet
+                }
+                
+                // Check if already mapped (prevent duplicate entries)
+                $existing_order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                
+                if ($existing_order_id) {
+                    return; // Already mapped, nothing to do
+                }
+                
+                // Save the payment ID mapping for webhook processing
+                Dodo_Payments_Payment_DB::save_mapping($order_id, $payment_id);
+                
+                $order->add_order_note(
+                    sprintf(
+                        // translators: %1$s: Payment ID
+                        __('Payment ID captured from checkout session return: %1$s', 'dodo-payments-for-woocommerce'),
+                        $payment_id
+                    )
+                );
+                
+                // Also check for subscription_id if this is a subscription order
+                $subscription_id = isset($_GET['subscription_id']) ? sanitize_text_field(wp_unslash($_GET['subscription_id'])) : '';
+                
+                if ($subscription_id && class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
+                    $subscription_orders = wcs_get_subscriptions_for_order($order_id);
+                    
+                    if (!empty($subscription_orders)) {
+                        $subscription = reset($subscription_orders);
+                        
+                        // Check if already mapped
+                        $existing_wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
+                        
+                        if (!$existing_wc_subscription_id) {
+                            Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $subscription_id);
+                            
+                            $order->add_order_note(
+                                sprintf(
+                                    // translators: %1$s: Subscription ID
+                                    __('Subscription ID captured from checkout session return: %1$s', 'dodo-payments-for-woocommerce'),
+                                    $subscription_id
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+
             public function do_payment($order)
             {
+                // Validate API key is configured
+                if (empty($this->api_key)) {
+                    $mode = $this->testmode ? 'Test' : 'Live';
+                    $error_msg = sprintf(
+                        // translators: %1$s: Mode (Test or Live)
+                        __('Dodo Payments %1$s API Key is not configured. Please configure it in WooCommerce > Settings > Payments > Dodo Payments.', 'dodo-payments-for-woocommerce'),
+                        $mode
+                    );
+                    
+                    $order->add_order_note($error_msg);
+                    wc_add_notice($error_msg, 'error');
+                    
+                    return array('result' => 'failure');
+                }
+                
                 // Check if order contains subscription products
                 $contains_subscription = $this->order_contains_subscription($order);
 
@@ -354,52 +1147,161 @@ function dodo_payments_init()
                         }
                     }
 
-                    $response = $contains_subscription
-                        ? $this->dodo_payments_api->create_subscription(
+                    // Use checkout sessions API when tax ID collection is enabled OR overlay checkout is enabled
+                    // This provides a modern checkout experience with additional features
+                    if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
+                        // Let Dodo Payments automatically handle payment method filtering based on location and currency
+                        $response = $this->dodo_payments_api->create_checkout_session(
                             $order,
                             $synced_products,
                             $dodo_discount_code,
-                            $this->get_return_url($order)
-                        )
-                        : $this->dodo_payments_api->create_payment(
-                            $order,
-                            $synced_products,
-                            $dodo_discount_code,
-                            $this->get_return_url($order)
+                            $this->get_return_url($order),
+                            $this->enable_tax_id_collection, // enable tax ID collection
+                            null // Let Dodo handle payment method filtering automatically
                         );
+                    } else {
+                        // Use legacy payment/subscription API for backward compatibility
+                        $response = $contains_subscription
+                            ? $this->dodo_payments_api->create_subscription(
+                                $order,
+                                $synced_products,
+                                $dodo_discount_code,
+                                $this->get_return_url($order)
+                            )
+                            : $this->dodo_payments_api->create_payment(
+                                $order,
+                                $synced_products,
+                                $dodo_discount_code,
+                                $this->get_return_url($order)
+                            );
+                    }
                 } catch (Exception $e) {
+                    $error_message = $e->getMessage();
+                    
                     $order->add_order_note(
                         sprintf(
                             // translators: %1$s: Error message
                             __('Dodo Payments Error: %1$s', 'dodo-payments-for-woocommerce'),
-                            $e->getMessage()
+                            $error_message
                         )
+                    );
+                    
+                    // Log the error for debugging
+                    $this->log_debug('Error for Order #' . $order->get_id() . ': ' . $error_message);
+
+                    // Show user-friendly error message
+                    wc_add_notice(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Payment processing failed: %1$s', 'dodo-payments-for-woocommerce'),
+                            $error_message
+                        ),
+                        'error'
                     );
 
                     return array('result' => 'failure');
                 }
 
-                // Handle both payment and subscription responses
-                if ($contains_subscription) {
-                    if (isset($response['payment_link'])) {
-                        if (isset($response['subscription_id'])) {
-                            // Save the subscription mapping
-                            $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
-                            if (!empty($subscription_order)) {
-                                $subscription = reset($subscription_order);
-                                Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $response['subscription_id']);
+                // Handle both checkout session and legacy payment/subscription responses
+                if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
+                    // Handle Checkout Session response
+                    if (isset($response['checkout_url']) && isset($response['session_id'])) {
+                        // Store the session ID for future reference
+                        $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
+                        
+                        // If overlay checkout is enabled, store checkout URL and redirect to checkout page
+                        if ($this->enable_overlay_checkout) {
+                            $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
+                            $order->save();
+
+                            // Store checkout session URL in WooCommerce session for script enqueue
+                            if (WC()->session) {
+                                WC()->session->set('dodo_checkout_session_url', $response['checkout_url']);
+                            }
+
+                            $order->add_order_note(
+                                sprintf(
+                                    // translators: %1$s: Session ID
+                                    __('Checkout session created in Dodo Payments: %1$s (Overlay checkout enabled)', 'dodo-payments-for-woocommerce'),
+                                    $response['session_id']
+                                )
+                            );
+
+                            // Redirect to checkout page where overlay will open
+                            return array(
+                                'result' => 'success',
+                                'redirect' => add_query_arg('dodo_checkout_session_url', urlencode($response['checkout_url']), wc_get_checkout_url())
+                            );
+                        } else {
+                            // Standard redirect to external checkout URL
+                            $order->save();
+
+                            $order->add_order_note(
+                                sprintf(
+                                    // translators: %1$s: Session ID
+                                    __('Checkout session created in Dodo Payments: %1$s (Tax ID collection enabled)', 'dodo-payments-for-woocommerce'),
+                                    $response['session_id']
+                                )
+                            );
+
+                            return array(
+                                'result' => 'success',
+                                'redirect' => $response['checkout_url']
+                            );
+                        }
+                    } else {
+                        $order->add_order_note(
+                            __('Failed to create checkout session in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
+                        );
+                        return array('result' => 'failure');
+                    }
+                } else {
+                    // Handle legacy payment and subscription responses
+                    if ($contains_subscription) {
+                        if (isset($response['payment_link'])) {
+                            if (isset($response['subscription_id'])) {
+                                // Save the subscription mapping
+                                $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
+                                if (!empty($subscription_order)) {
+                                    $subscription = reset($subscription_order);
+                                    Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $response['subscription_id']);
+
+                                    $order->add_order_note(
+                                        sprintf(
+                                            // translators: %1$s: Subscription ID
+                                            __('Subscription created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                                            $response['subscription_id']
+                                        )
+                                    );
+                                }
+                            }
+
+                            if (isset($response['payment_id'])) {
+                                // Save the payment mapping
+                                Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $response['payment_id']);
 
                                 $order->add_order_note(
                                     sprintf(
-                                        // translators: %1$s: Subscription ID
-                                        __('Subscription created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                                        $response['subscription_id']
+                                        // translators: %1$s: Payment ID
+                                        __('Payment created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                                        $response['payment_id']
                                     )
                                 );
                             }
-                        }
 
-                        if (isset($response['payment_id'])) {
+
+                            return array(
+                                'result' => 'success',
+                                'redirect' => $response['payment_link']
+                            );
+                        } else {
+                            $order->add_order_note(
+                                __('Failed to create subscription in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
+                            );
+                            return array('result' => 'failure');
+                        }
+                    } else {
+                        if (isset($response['payment_link']) && isset($response['payment_id'])) {
                             // Save the payment mapping
                             Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $response['payment_id']);
 
@@ -410,41 +1312,17 @@ function dodo_payments_init()
                                     $response['payment_id']
                                 )
                             );
+
+                            return array(
+                                'result' => 'success',
+                                'redirect' => $response['payment_link']
+                            );
+                        } else {
+                            $order->add_order_note(
+                                __('Failed to create payment in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
+                            );
+                            return array('result' => 'failure');
                         }
-
-
-                        return array(
-                            'result' => 'success',
-                            'redirect' => $response['payment_link']
-                        );
-                    } else {
-                        $order->add_order_note(
-                            __('Failed to create subscription in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
-                        );
-                        return array('result' => 'failure');
-                    }
-                } else {
-                    if (isset($response['payment_link']) && isset($response['payment_id'])) {
-                        // Save the payment mapping
-                        Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $response['payment_id']);
-
-                        $order->add_order_note(
-                            sprintf(
-                                // translators: %1$s: Payment ID
-                                __('Payment created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                                $response['payment_id']
-                            )
-                        );
-
-                        return array(
-                            'result' => 'success',
-                            'redirect' => $response['payment_link']
-                        );
-                    } else {
-                        $order->add_order_note(
-                            __('Failed to create payment in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
-                        );
-                        return array('result' => 'failure');
                     }
                 }
             }
@@ -479,7 +1357,12 @@ function dodo_payments_init()
                     if ($dodo_product_id) {
                         $dodo_product = $this->dodo_payments_api->get_product($dodo_product_id);
 
-                        if (!!$dodo_product) {
+                        // If product not found in Dodo (404), clear the stale mapping
+                        if (!$dodo_product) {
+                            $this->log_debug("Product mapping stale for WC Product #{$local_product_id}, clearing mapping for Dodo Product {$dodo_product_id}");
+                            Dodo_Payments_Product_DB::delete_mapping($local_product_id);
+                            $dodo_product_id = null; // Force re-creation
+                        } else {
                             try {
                                 if ($is_subscription) {
                                     $this->dodo_payments_api->update_subscription_product($dodo_product['product_id'], $product);
@@ -806,20 +1689,35 @@ function dodo_payments_init()
                 return false;
             }
 
+            /**
+             * Handles webhook notifications from Dodo Payments
+             * 
+             * This method processes webhooks from both:
+             * - Legacy payment/subscription API (when tax ID collection is disabled)
+             * - Checkout Sessions API (when tax ID collection is enabled)
+             * 
+             * Both approaches fire the same webhook events (payment.succeeded, subscription.active, etc.)
+             * so the same handler logic works for both flows.
+             * 
+             * @return void
+             * @since 0.3.0
+             */
             public function webhook()
             {
                 $headers = [
-                    'webhook-signature' => isset($_SERVER['HTTP_WEBHOOK_SIGNATURE']) ? sanitize_text_field($_SERVER['HTTP_WEBHOOK_SIGNATURE']) : '',
-                    'webhook-id' => isset($_SERVER['HTTP_WEBHOOK_ID']) ? sanitize_text_field($_SERVER['HTTP_WEBHOOK_ID']) : '',
-                    'webhook-timestamp' => isset($_SERVER['HTTP_WEBHOOK_TIMESTAMP']) ? sanitize_text_field($_SERVER['HTTP_WEBHOOK_TIMESTAMP']) : '',
+                    'webhook-signature' => isset($_SERVER['HTTP_WEBHOOK_SIGNATURE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_WEBHOOK_SIGNATURE'])) : '',
+                    'webhook-id' => isset($_SERVER['HTTP_WEBHOOK_ID']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_WEBHOOK_ID'])) : '',
+                    'webhook-timestamp' => isset($_SERVER['HTTP_WEBHOOK_TIMESTAMP']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_WEBHOOK_TIMESTAMP'])) : '',
                 ];
 
-                $body = sanitize_text_field(file_get_contents('php://input'));
+                // Read raw webhook body - do NOT sanitize as it will corrupt JSON
+                // The webhook signature verification class handles security validation
+                $body = file_get_contents('php://input');
 
                 try {
                     $webhook = new Dodo_Payments_Standard_Webhook($this->webhook_key);
                 } catch (\Exception $e) {
-                    error_log('Dodo Payments: Invalid webhook key: ' . $e->getMessage());
+                    $this->log_debug('Invalid webhook key: ' . $e->getMessage());
                     if ($this->testmode) {
                         status_header(401);
                     } else {
@@ -831,7 +1729,7 @@ function dodo_payments_init()
                 try {
                     $payload = $webhook->verify($body, $headers);
                 } catch (Exception $e) {
-                    error_log('Dodo Payments: Could not verify webhook event: ' . $e->getMessage());
+                    $this->log_debug('Could not verify webhook event: ' . $e->getMessage());
                     if ($this->testmode) {
                         status_header(401);
                     } else {
@@ -845,7 +1743,7 @@ function dodo_payments_init()
                 $type_parts = explode('.', $type, 2);
 
                 if (count($type_parts) !== 2) {
-                    error_log('Dodo Payments: Invalid webhook event type format: ' . $type);
+                    $this->log_debug('Invalid webhook event type format: ' . $type);
                     if ($this->testmode) {
                         status_header(400);
                     } else {
@@ -878,6 +1776,11 @@ function dodo_payments_init()
             /**
              * Handle payment webhook events
              *
+             * Following Dodo Payments best practices for webhook handling:
+             * 1. Check metadata first (most reliable, eliminates race conditions)
+             * 2. Check payment_id mapping (secondary method)
+             * 3. Fallback to session_id search (tertiary method for legacy/edge cases)
+             *
              * @param array $payload
              * @param string $status
              * @return void
@@ -885,17 +1788,71 @@ function dodo_payments_init()
             private function handle_payment_webhook($payload, $status)
             {
                 $payment_id = $payload['data']['payment_id'];
-                $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                $order_id = null;
+                $order = null; // Will be set if retrieved during metadata check
 
+                // Method 1: Extract order_id from metadata (most reliable, eliminates race conditions)
+                // Metadata is included in checkout session creation and available in webhook payload
+                if (isset($payload['data']['metadata']['wc_order_id'])) {
+                    $metadata_order_id = absint($payload['data']['metadata']['wc_order_id']);
+                    
+                    // Verify the order exists and is valid
+                    if ($metadata_order_id) {
+                        $order = wc_get_order($metadata_order_id);
+                        if ($order && $order->get_payment_method() === $this->id) {
+                            $order_id = $metadata_order_id;
+                            // Save payment_id mapping for future webhooks (if not already mapped)
+                            $existing_order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                            if (!$existing_order_id) {
+                                Dodo_Payments_Payment_DB::save_mapping($order_id, $payment_id);
+                            }
+                        } else {
+                            $order = null; // Invalid order, continue to next method
+                        }
+                    }
+                }
+
+                // Method 2: Check payment_id mapping (for legacy orders or direct payments)
                 if (!$order_id) {
-                    error_log('Dodo Payments: Could not find order_id for payment: ' . $payment_id);
+                    $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
+                }
+
+                // Method 3: Fallback to session_id search (handles race conditions)
+                // This should rarely be needed if metadata is properly set
+                if (!$order_id && isset($payload['data']['checkout_session_id'])) {
+                    $session_id = $payload['data']['checkout_session_id'];
+                    
+                    // Search for order with this session_id in meta
+                    $orders = wc_get_orders(array(
+                        'limit' => 1,
+                        'meta_key' => '_dodo_checkout_session_id',
+                        'meta_value' => $session_id,
+                        'return' => 'ids',
+                    ));
+                    
+                    if (!empty($orders)) {
+                        $order_id = $orders[0];
+                        // Save the payment_id mapping for future webhooks
+                        Dodo_Payments_Payment_DB::save_mapping($order_id, $payment_id);
+
+                        // Only log in debug mode to reduce noise
+                        $this->log_debug("Found order #{$order_id} via session ID fallback, saved payment mapping");
+                    }
+                }
+
+                // Final check: Log error only if order truly cannot be found
+                if (!$order_id) {
+                    $this->log_debug('Could not find order_id for payment: ' . $payment_id . ' (checked metadata, payment_id mapping, and session_id)');
                     return;
                 }
 
-                $order = wc_get_order($order_id);
+                // Get the order object (reuse if already retrieved from metadata check)
+                if (!$order || $order->get_id() !== $order_id) {
+                    $order = wc_get_order($order_id);
+                }
 
                 if (!$order) {
-                    error_log('Dodo Payments: Could not find order: ' . $order_id);
+                    $this->log_debug('Could not find order: ' . $order_id);
                     return;
                 }
 
@@ -913,8 +1870,8 @@ function dodo_payments_init()
                             }
 
                             if (!$subscription) {
-                                error_log(
-                                    'Dodo Payments: Could not find WooCommerce subscription '
+                                $this->log_debug(
+                                    'Could not find WooCommerce subscription '
                                     . $wc_subscription_id
                                     . ' for subscription ID '
                                     . $subscription_id
@@ -959,14 +1916,14 @@ function dodo_payments_init()
                 $order_id = Dodo_Payments_Payment_DB::get_order_id($payment_id);
 
                 if (!$order_id) {
-                    error_log('Dodo Payments: Could not find order for payment: ' . $payment_id);
+                    $this->log_debug('Could not find order for payment: ' . $payment_id);
                     return;
                 }
 
                 $order = wc_get_order($order_id);
 
                 if (!$order) {
-                    error_log('Dodo Payments: Could not find order: ' . $order_id);
+                    $this->log_debug('Could not find order: ' . $order_id);
                     return;
                 }
 
@@ -1022,14 +1979,14 @@ function dodo_payments_init()
                 $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
                 if (!$wc_subscription_id) {
-                    error_log('Dodo Payments: Could not find WooCommerce subscription for Dodo subscription: ' . $subscription_id);
+                    $this->log_debug('Could not find WooCommerce subscription for Dodo subscription: ' . $subscription_id);
                     return;
                 }
 
                 $subscription = wcs_get_subscription($wc_subscription_id);
 
                 if (!$subscription) {
-                    error_log('Dodo Payments: Could not find WooCommerce subscription: ' . $wc_subscription_id);
+                    $this->log_debug('Could not find WooCommerce subscription: ' . $wc_subscription_id);
                     return;
                 }
 
