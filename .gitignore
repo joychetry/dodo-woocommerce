@@ -1,4 +1,5 @@
 .md
 .DS_Store
 build-plugin.sh
-/build
+verify-zip.sh
+build/
