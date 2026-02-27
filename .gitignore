@@ -5,3 +5,4 @@ verify-zip.sh
 build/
 .agent
 .claude
+docs/
