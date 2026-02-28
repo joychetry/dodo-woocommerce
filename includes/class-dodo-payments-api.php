@@ -1053,6 +1053,101 @@ class Dodo_Payments_API
     }
 
     /**
+     * Changes the plan of an existing subscription in the Dodo Payments API.
+     *
+     * Uses the Change Plan API to upgrade or downgrade a subscription to a different
+     * product tier. Dodo handles proration natively based on the billing mode.
+     *
+     * @param string      $dodo_subscription_id The ID of the subscription to change.
+     * @param string      $new_product_id       The Dodo product ID of the new plan.
+     * @param int         $quantity             Number of units. Must be at least 1.
+     * @param string      $proration_mode       One of 'prorated_immediately', 'full_immediately', 'difference_immediately'.
+     * @param string      $on_payment_failure   'prevent_change' or 'apply_change'. Defaults to 'prevent_change'.
+     *
+     * @return void
+     * @throws \Exception If the API request fails.
+     */
+    public function change_plan($dodo_subscription_id, $new_product_id, $quantity = 1, $proration_mode = 'prorated_immediately', $on_payment_failure = 'prevent_change')
+    {
+        $body = array(
+            'product_id'             => $new_product_id,
+            'quantity'               => $quantity,
+            'proration_billing_mode' => $proration_mode,
+            'on_payment_failure'     => $on_payment_failure,
+        );
+
+        $res = $this->post("/subscriptions/{$dodo_subscription_id}/change-plan", $body);
+
+        if (is_wp_error($res)) {
+            throw new Exception("Failed to change subscription plan: " . esc_html($res->get_error_message()));
+        }
+
+        $response_code = wp_remote_retrieve_response_code($res);
+
+        if ($response_code === 409) {
+            throw new Exception("A pending plan change already exists for this subscription.");
+        }
+
+        if ($response_code === 422) {
+            $error_body = wp_remote_retrieve_body($res);
+            throw new Exception("Subscription plan change not supported: " . esc_html($error_body));
+        }
+
+        if ($response_code !== 200) {
+            $error_body = wp_remote_retrieve_body($res);
+            throw new Exception("Failed to change subscription plan (HTTP {$response_code}): " . esc_html($error_body));
+        }
+
+        return;
+    }
+
+    /**
+     * Creates a one-time product with a specific price for prorated upgrade checkouts.
+     *
+     * Used when a customer upgrades a one-time license and only needs to pay
+     * the prorated difference. Creates a temporary product in Dodo with the
+     * exact upgrade price.
+     *
+     * NOTE: These temporary products are not automatically cleaned up. Consider
+     * implementing a scheduled task to archive or delete old upgrade products.
+     *
+     * @param string $name           Display name for the upgrade product.
+     * @param int    $price_in_cents Price in lowest currency denomination (e.g. cents).
+     *
+     * @return array{product_id: string} The created product data.
+     * @throws \Exception If the API request fails.
+     */
+    public function create_product_with_custom_price($name, $price_in_cents)
+    {
+        $body = array(
+            'name'         => $name,
+            'description'  => 'License upgrade (prorated)',
+            'price'        => array(
+                'type'                     => 'one_time_price',
+                'currency'                 => get_woocommerce_currency(),
+                'price'                    => (int) $price_in_cents,
+                'discount'                 => 0,
+                'purchasing_power_parity'  => false,
+                'tax_inclusive'            => $this->global_tax_inclusive,
+            ),
+            'tax_category' => $this->global_tax_category,
+        );
+
+        $res = $this->post('/products', $body);
+
+        if (is_wp_error($res)) {
+            throw new Exception('Failed to create upgrade product: ' . esc_html($res->get_error_message()));
+        }
+
+        if (wp_remote_retrieve_response_code($res) !== 200) {
+            $error_body = wp_remote_retrieve_body($res);
+            throw new Exception('Failed to create upgrade product: ' . esc_html($error_body));
+        }
+
+        return json_decode(wp_remote_retrieve_body($res), true);
+    }
+
+    /**
      * Converts a WooCommerce subscription period string to the Dodo Payments interval format.
      *
      * Supported values are 'day', 'week', 'month', and 'year'. Returns 'Month' if the input is unrecognized.
