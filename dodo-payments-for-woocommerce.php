@@ -1816,7 +1816,7 @@ function dodo_payments_init()
                                             __('Upgrade: %s', 'dodo-payments-for-woocommerce'),
                                             $product->get_name()
                                         ),
-                                        (int) round($effective_unit_price * 100)
+                                        $this->dodo_payments_api->price_to_minor_units($effective_unit_price)
                                     );
                                     $dodo_product_id = $temp_product['product_id'];
 
@@ -1901,7 +1901,9 @@ function dodo_payments_init()
                     $mapped_products[] = array(
                         'product_id' => $dodo_product_id,
                         'quantity' => $item->get_quantity(),
-                        'amount' => (int) round((float) $item->get_subtotal() / max(1, $item->get_quantity()) * 100)
+                        'amount' => $this->dodo_payments_api->price_to_minor_units(
+                            (float) $item->get_subtotal() / max(1, $item->get_quantity())
+                        )
                     );
                 }
 
@@ -1961,7 +1963,13 @@ function dodo_payments_init()
 
             private static function wc_coupon_to_dodo_discount_body($coupon)
             {
-                $coupon_amount = (int) $coupon->get_amount() * 100;
+                // Get API instance for currency conversion helper
+                $api = new Dodo_Payments_API(
+                    get_option('dodo_payments_api_key'),
+                    get_option('dodo_payments_testmode') === 'yes'
+                );
+
+                $coupon_amount = $api->price_to_minor_units($coupon->get_amount());
                 /** @var int|null */
                 $usage_limit = $coupon->get_usage_limit() > 0 ? (int) $coupon->get_usage_limit() : null;
 
