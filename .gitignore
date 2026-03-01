@@ -2,6 +2,7 @@
 .DS_Store
 build-plugin.sh
 verify-zip.sh
+version-bump.sh
 build/
 .agent
 .claude
