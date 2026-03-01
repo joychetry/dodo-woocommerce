@@ -591,55 +591,96 @@ class Dodo_Payments_API
      */
     public function create_subscription_product($product)
     {
-        if (!class_exists('WC_Subscriptions_Product')) {
-            throw new Exception('WooCommerce Subscriptions plugin is required for subscription products');
-        }
+        if (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product)) {
+            // Get subscription details using WCS
+            $period = WC_Subscriptions_Product::get_period($product);
+            $period_count = WC_Subscriptions_Product::get_interval($product);
+            $length = WC_Subscriptions_Product::get_length($product);
 
-        $stripped_description = wp_strip_all_tags($product->get_description());
-        $truncated_description = mb_substr($stripped_description, 0, min(999, mb_strlen($stripped_description)));
-
-        // Get subscription details
-        $period = WC_Subscriptions_Product::get_period($product);
-        $period_count = WC_Subscriptions_Product::get_interval($product);
-        $length = WC_Subscriptions_Product::get_length($product);
-
-        if ($length === 0) {
-            // default to 10 years
-            switch ($period) {
-                case 'day':
-                    $length = 3650;
-                    break;
-                case 'week':
-                    $length = 520;
-                    break;
-                case 'month':
-                    $length = 120;
-                    break;
-                case 'year':
-                    $length = 10;
-                    break;
+            if ($length === 0) {
+                // default to 10 years
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
             }
-        }
 
-        $trial_length = WC_Subscriptions_Product::get_trial_length($product);
-        $trial_period = WC_Subscriptions_Product::get_trial_period($product);
+            $trial_length = WC_Subscriptions_Product::get_trial_length($product);
+            $trial_period = WC_Subscriptions_Product::get_trial_period($product);
 
-        $trial_period_days = 0;
-        if ($trial_length > 0) {
-            switch ($trial_period) {
-                case 'day':
-                    $trial_period_days = $trial_length;
-                    break;
-                case 'week':
-                    $trial_period_days = $trial_length * 7;
-                    break;
-                case 'month':
-                    $trial_period_days = $trial_length * 30;
-                    break;
-                case 'year':
-                    $trial_period_days = $trial_length * 365;
-                    break;
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
             }
+        } elseif ($product->get_type() === 'lm-subscription') {
+            // Get subscription details using LM Meta
+            $period = $product->get_meta('_billing_period') ?: 'month';
+            $period_count = (int) ($product->get_meta('_billing_interval') ?: 1);
+            $length = (int) ($product->get_meta('_billing_cycles') ?: 0);
+
+            if ($length === 0) {
+                // default to 10 years
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
+            }
+
+            $trial_length = (int) ($product->get_meta('_trial_interval') ?: 0);
+            $trial_period = $product->get_meta('_trial_period') ?: 'day';
+
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
+            }
+        } else {
+            throw new Exception('No subscription product handler available');
         }
 
         $price_data = array(
@@ -687,61 +728,104 @@ class Dodo_Payments_API
      */
     public function update_subscription_product($dodo_product_id, $product)
     {
-        if (!class_exists('WC_Subscriptions_Product')) {
-            throw new Exception('WooCommerce Subscriptions plugin is required for subscription products');
-        }
-
         $dodo_product = $this->get_product($dodo_product_id);
-
         if (!$dodo_product) {
-            throw new Exception('Product (' . esc_html($dodo_product_id) . ') not found');
+            throw new Exception('Product not found in Dodo Payments API.');
         }
 
-        $stripped_description = wp_strip_all_tags($product->get_description());
-        $truncated_description = mb_substr($stripped_description, 0, min(999, mb_strlen($stripped_description)));
+        if (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product)) {
+            $period = WC_Subscriptions_Product::get_period($product);
+            $period_count = WC_Subscriptions_Product::get_interval($product);
+            $length = WC_Subscriptions_Product::get_length($product);
 
-        $period = WC_Subscriptions_Product::get_period($product);
-        $period_count = WC_Subscriptions_Product::get_interval($product);
-        $length = WC_Subscriptions_Product::get_length($product);
-
-        if ($length === 0) {
-            // default to 10 years, if subscription length is not set
-            switch ($period) {
-                case 'day':
-                    $length = 3650;
-                    break;
-                case 'week':
-                    $length = 520;
-                    break;
-                case 'month':
-                    $length = 120;
-                    break;
-                case 'year':
-                    $length = 10;
-                    break;
+            if ($length === 0) {
+                // default to 10 years, if subscription length is not set
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
             }
-        }
 
-        $trial_length = WC_Subscriptions_Product::get_trial_length($product);
-        $trial_period = WC_Subscriptions_Product::get_trial_period($product);
+            $trial_length = WC_Subscriptions_Product::get_trial_length($product);
+            $trial_period = WC_Subscriptions_Product::get_trial_period($product);
 
-        $trial_period_days = 0;
-        if ($trial_length > 0) {
-            switch ($trial_period) {
-                case 'day':
-                    $trial_period_days = $trial_length;
-                    break;
-                case 'week':
-                    $trial_period_days = $trial_length * 7;
-                    break;
-                case 'month':
-                    $trial_period_days = $trial_length * 30;
-                    break;
-                case 'year':
-                    $trial_period_days = $trial_length * 365;
-                    break;
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
             }
+        } elseif ($product->get_type() === 'lm-subscription') {
+            $period = $product->get_meta('_billing_period') ?: 'month';
+            $period_count = (int) ($product->get_meta('_billing_interval') ?: 1);
+            $length = (int) ($product->get_meta('_billing_cycles') ?: 0);
+
+            if ($length === 0) {
+                // default to 10 years, if subscription length is not set
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
+            }
+
+            $trial_length = (int) ($product->get_meta('_trial_interval') ?: 0);
+            $trial_period = $product->get_meta('_trial_period') ?: 'day';
+
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
+            }
+        } else {
+            throw new Exception('No subscription product handler available');
         }
+
+        $description = $product->get_short_description() ?: $product->get_description();
+        // Dodo Payments API has a 500 character limit for descriptions
+        $truncated_description = mb_substr(strip_tags($description), 0, 500);
 
         $price_data = array(
             'currency' => get_woocommerce_currency(),

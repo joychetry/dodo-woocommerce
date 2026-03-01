@@ -171,6 +171,123 @@ function dodo_payments_init()
                     add_action('woocommerce_subscription_status_updated', array($this, 'handle_subscription_status_updated'), 10, 3);
                     add_action('woocommerce_subscription_dates_updated', array($this, 'handle_subscription_date_change'), 10, 2);
                 }
+
+                if (class_exists('LicenseMonks_Subscription')) {
+                    add_action('licensemonks/subscription/status/updated', array($this, 'handle_lm_subscription_status_updated'), 10, 3);
+                    // Date changes sync not supported for LM either yet
+                }
+            }
+
+            public function handle_lm_subscription_status_updated($subscription, $new_status, $old_status)
+            {
+                if ($subscription->get_payment_method() !== $this->id) {
+                    return;
+                }
+
+                // Strip wc- prefix if present for uniform matching
+                $new_status = str_starts_with($new_status, 'wc-') ? substr($new_status, 3) : $new_status;
+
+                switch ($new_status) {
+                    case 'on-hold':
+                        $this->suspend_lm_subscription($subscription);
+                        break;
+                    case 'pending-cancel':
+                        $this->cancel_lm_subscription_at_next_billing($subscription);
+                        break;
+                    case 'cancelled':
+                    case 'expired':
+                        $this->cancel_lm_subscription($subscription);
+                        break;
+                    case 'active':
+                        if (str_contains($old_status, 'on-hold')) {
+                            $this->reactivate_lm_subscription($subscription);
+                        }
+                        break;
+                }
+            }
+
+            private function suspend_lm_subscription($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->pause_subscription($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription paused in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to pause subscription in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+
+            private function cancel_lm_subscription($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->cancel_subscription($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to cancel subscription in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+
+            private function cancel_lm_subscription_at_next_billing($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->cancel_subscription_at_next_billing_date($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription set to cancel at end of billing cycle in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to set subscription to cancel at next billing date in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+
+            private function reactivate_lm_subscription($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->resume_subscription($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription resumed in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to resume subscription in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
             }
 
             public function handle_subscription_status_updated($subscription, $new_status, $old_status)
@@ -1127,17 +1244,34 @@ function dodo_payments_init()
                 // Also check for subscription_id if this is a subscription order
                 $subscription_id = isset($_GET['subscription_id']) ? sanitize_text_field(wp_unslash($_GET['subscription_id'])) : '';
                 
-                if ($subscription_id && class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
-                    $subscription_orders = wcs_get_subscriptions_for_order($order_id);
+                if ($subscription_id) {
+                    $subscription_found = false;
                     
-                    if (!empty($subscription_orders)) {
-                        $subscription = reset($subscription_orders);
+                    if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
+                        $subscription_orders = wcs_get_subscriptions_for_order($order_id);
                         
+                        if (!empty($subscription_orders)) {
+                            $subscription = reset($subscription_orders);
+                            $subscription_found = $subscription;
+                        }
+                    } else {
+                        // Check for License Monks subscriptions
+                        $lm_subscriptions = wc_get_orders(array(
+                            'type'   => 'lm_subscription',
+                            'parent' => $order_id,
+                            'limit'  => 1,
+                        ));
+                        if (!empty($lm_subscriptions)) {
+                            $subscription_found = reset($lm_subscriptions);
+                        }
+                    }
+                    
+                    if ($subscription_found) {
                         // Check if already mapped
                         $existing_wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
                         
                         if (!$existing_wc_subscription_id) {
-                            Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $subscription_id);
+                            Dodo_Payments_Subscription_DB::save_mapping($subscription_found->get_id(), $subscription_id);
                             
                             $order->add_order_note(
                                 sprintf(
@@ -1338,10 +1472,27 @@ function dodo_payments_init()
                         if (isset($response['payment_link'])) {
                             if (isset($response['subscription_id'])) {
                                 // Save the subscription mapping
-                                $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
-                                if (!empty($subscription_order)) {
-                                    $subscription = reset($subscription_order);
-                                    Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $response['subscription_id']);
+                                $subscription_found = false;
+
+                                if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
+                                    $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
+                                    if (!empty($subscription_order)) {
+                                        $subscription_found = reset($subscription_order);
+                                    }
+                                } else {
+                                    // Check for License Monks subscriptions
+                                    $lm_subscriptions = wc_get_orders(array(
+                                        'type'   => 'lm_subscription',
+                                        'parent' => $order->get_id(),
+                                        'limit'  => 1,
+                                    ));
+                                    if (!empty($lm_subscriptions)) {
+                                        $subscription_found = reset($lm_subscriptions);
+                                    }
+                                }
+
+                                if ($subscription_found) {
+                                    Dodo_Payments_Subscription_DB::save_mapping($subscription_found->get_id(), $response['subscription_id']);
 
                                     $order->add_order_note(
                                         sprintf(
@@ -1581,6 +1732,8 @@ function dodo_payments_init()
                     // Check if this is a subscription product
                     $is_subscription = false;
                     if (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product)) {
+                        $is_subscription = true;
+                    } elseif ($product->get_type() === 'lm-subscription') {
                         $is_subscription = true;
                     }
 
@@ -1968,6 +2121,14 @@ function dodo_payments_init()
                     }
                 }
 
+                // License Monks check
+                foreach ($order->get_items() as $item) {
+                    $product = $item->get_product();
+                    if ($product && $product->get_type() === 'lm-subscription') {
+                        return true;
+                    }
+                }
+
                 return false;
             }
 
@@ -2147,8 +2308,20 @@ function dodo_payments_init()
                             $subscription_id = $payload['data']['subscription_id'];
                             $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
-                            if (function_exists('wcs_get_subscription')) {
-                                $subscription = wcs_get_subscription($wc_subscription_id);
+                            $subscription = false;
+                            
+                            if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscription')) {
+                                $subscription_order = wcs_get_subscription($wc_subscription_id);
+                                if ($subscription_order) {
+                                    $subscription = $subscription_order;
+                                }
+                            }
+                            
+                            if (!$subscription) {
+                                $lm_subscription = wc_get_order($wc_subscription_id);
+                                if ($lm_subscription && $lm_subscription->get_type() === 'lm_subscription') {
+                                    $subscription = $lm_subscription;
+                                }
                             }
 
                             if (!$subscription) {
@@ -2163,7 +2336,11 @@ function dodo_payments_init()
 
                             $dodo_subscription = $this->dodo_payments_api->get_subscription($subscription_id);
 
-                            $this->create_renewal_order($subscription, $payment_id);
+                            if ($subscription->get_type() === 'lm_subscription') {
+                                $this->create_lm_renewal_order($subscription, $payment_id);
+                            } else {
+                                $this->create_renewal_order($subscription, $payment_id);
+                            }
                         }
 
                         break;
@@ -2253,15 +2430,24 @@ function dodo_payments_init()
              */
             private function handle_subscription_webhook($payload, $status)
             {
-                if (!class_exists('WC_Subscriptions')) {
-                    return;
-                }
-
                 $subscription_id = $payload['data']['subscription_id'];
+
                 $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
                 if (!$wc_subscription_id) {
-                    $this->log_debug('Could not find WooCommerce subscription for Dodo subscription: ' . $subscription_id);
+                    $this->log_debug('Could not find WooCommerce subscription for subscription ID ' . $subscription_id);
+                    return;
+                }
+
+                $subscription = wc_get_order($wc_subscription_id);
+                
+                if ($subscription && $subscription->get_type() === 'lm_subscription') {
+                    $this->handle_lm_subscription_webhook_event($subscription, $status, $payload);
+                    return;
+                }
+                
+                if (!class_exists('WC_Subscriptions') || !function_exists('wcs_get_subscription')) {
+                    $this->log_debug('WC_Subscriptions plugin is not available. Skipping webhook handler.');
                     return;
                 }
 
@@ -2351,6 +2537,62 @@ function dodo_payments_init()
                         $renewal_order->set_payment_method(wc_get_payment_gateway_by_order($subscription));
 
                         $renewal_order->update_status('completed');
+                        $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
+                    }
+                }
+            }
+
+            private function handle_lm_subscription_webhook_event($subscription, $status, $payload)
+            {
+                switch ($status) {
+                    case 'active':
+                        LicenseMonks_Subscription_Lifecycle::transition($subscription, 'active');
+                        $subscription->add_order_note(__('Subscription marked active in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'renewed':
+                        // Handled in payment.succeeded webhook instead
+                        break;
+                    case 'on_hold':
+                    case 'paused':
+                        LicenseMonks_Subscription_Lifecycle::transition($subscription, 'on-hold');
+                        $subscription->add_order_note(__('Subscription on hold in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'cancelled':
+                        LicenseMonks_Subscription_Lifecycle::transition($subscription, 'cancelled');
+                        $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'failed':
+                        LicenseMonks_Subscription_Lifecycle::put_on_hold(
+                            $subscription,
+                            __('Payment failed in Dodo Payments', 'dodo-payments-for-woocommerce')
+                        );
+                        break;
+                    case 'expired':
+                        LicenseMonks_Subscription_Lifecycle::expire($subscription);
+                        $subscription->add_order_note(__('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    default:
+                        $subscription->add_order_note(
+                            sprintf(
+                                // translators: %1$s: Webhook type
+                                __('Subscription webhook received from Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                                $payload['type']
+                            )
+                        );
+                        break;
+                }
+            }
+
+            private function create_lm_renewal_order($subscription, $payment_id)
+            {
+                if (class_exists('LicenseMonks_Subscription_Renewal')) {
+                    $renewal_order = LicenseMonks_Subscription_Renewal::process_renewal($subscription);
+                    if ($renewal_order && !is_wp_error($renewal_order)) {
+                        $renewal_order->payment_complete($payment_id);
+                        $renewal_order->update_status('completed');
+                        
+                        LicenseMonks_Subscription_Lifecycle::advance_period($subscription, $renewal_order);
+                        
                         $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
                     }
                 }
