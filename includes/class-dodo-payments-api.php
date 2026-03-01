@@ -37,7 +37,11 @@ class Dodo_Payments_API
      */
     private function log_debug($message)
     {
-        if (defined('WP_DEBUG') && WP_DEBUG) {
+        if (function_exists('wc_get_logger')) {
+            $logger = wc_get_logger();
+            $logger->debug('Dodo Payments API: ' . $message, array('source' => 'dodo-payments'));
+        } elseif (defined('WP_DEBUG') && WP_DEBUG) {
+            // Fallback to error log if WooCommerce logger is not available
             error_log('Dodo Payments API: ' . $message);
         }
     }
@@ -307,7 +311,7 @@ class Dodo_Payments_API
             $error_data = json_decode($error_body, true);
             $error_message = isset($error_data['message']) ? $error_data['message'] : $error_body;
 
-            throw new Exception("Failed to create checkout session (HTTP " . $response_code . "): " . esc_html($error_message));
+            throw new Exception("Failed to create checkout session (HTTP " . esc_html($response_code) . "): " . esc_html($error_message));
         }
 
         $response_body = wp_remote_retrieve_body($res);
@@ -829,7 +833,7 @@ class Dodo_Payments_API
 
         $description = $product->get_short_description() ?: $product->get_description();
         // Dodo Payments API has a 500 character limit for descriptions
-        $truncated_description = mb_substr(strip_tags($description), 0, 500);
+        $truncated_description = mb_substr(wp_strip_all_tags($description), 0, 500);
 
         $price_data = array(
             'currency' => get_woocommerce_currency(),
@@ -1136,7 +1140,7 @@ class Dodo_Payments_API
             return $response_body['invoice_pdf'];
         }
 
-        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
+        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . wc_print_r($response_body, true));
         return false;
     }
 
@@ -1183,7 +1187,7 @@ class Dodo_Payments_API
 
         if ($response_code !== 200) {
             $error_body = wp_remote_retrieve_body($res);
-            throw new Exception("Failed to change subscription plan (HTTP {$response_code}): " . esc_html($error_body));
+            throw new Exception("Failed to change subscription plan (HTTP " . esc_html($response_code) . "): " . esc_html($error_body));
         }
 
         return;

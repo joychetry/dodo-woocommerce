@@ -351,7 +351,11 @@ function dodo_payments_init()
              */
             private function log_debug($message)
             {
-                if (defined('WP_DEBUG') && WP_DEBUG) {
+                if (function_exists('wc_get_logger')) {
+                    $logger = wc_get_logger();
+                    $logger->debug('Dodo Payments: ' . $message, array('source' => 'dodo-payments'));
+                } elseif (defined('WP_DEBUG') && WP_DEBUG) {
+                    // Fallback to error log if WooCommerce logger is not available
                     error_log('Dodo Payments: ' . $message);
                 }
             }
@@ -932,11 +936,13 @@ function dodo_payments_init()
                 // The script is loaded from jsDelivr CDN which is the official distribution channel.
                 // Security: The SDK only communicates with Dodo Payments servers and does not
                 // execute arbitrary code on your site.
+                // Note: External script loading is allowed for payment processor SDKs per WordPress.org guidelines.
+                // An exception will be requested during plugin review if needed.
                 wp_enqueue_script(
                     'dodo-payments-checkout-sdk',
                     'https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js',
                     array(),
-                    null,
+                    '1.0.0', // Version for cache busting - will be updated with SDK releases
                     true
                 );
 
