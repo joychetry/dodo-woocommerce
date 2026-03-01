@@ -1593,6 +1593,17 @@ function dodo_payments_init()
                             ));
                         }
 
+                        // Verify license ownership - ensure current user owns this license
+                        $license_user_id = isset($license->user_id) ? absint($license->user_id) : 0;
+                        $current_user_id = get_current_user_id();
+
+                        if ($license_user_id > 0 && $current_user_id > 0 && $license_user_id !== $current_user_id) {
+                            // Check if current user has capability to upgrade licenses (e.g., shop manager)
+                            if (!current_user_can('manage_woocommerce')) {
+                                throw new Exception(__('You do not have permission to upgrade this license.', 'dodo-payments-for-woocommerce'));
+                            }
+                        }
+
                         $subscriptions = wcs_get_subscriptions_for_order($license->order_id);
                         if (empty($subscriptions)) {
                             throw new Exception(sprintf(
@@ -1648,7 +1659,20 @@ function dodo_payments_init()
                     // 'prorated_immediately' - Charge prorated amount now
                     // 'full_immediately' - Charge full amount of new plan now
                     // 'difference_immediately' - Charge only the difference if upgrading
+                    $valid_modes = array('prorated_immediately', 'full_immediately', 'difference_immediately');
                     $proration_mode = apply_filters('dodo_payments_subscription_upgrade_proration_mode', 'prorated_immediately', $order, $upgrade_meta);
+
+                    // Validate proration mode - fallback to default if invalid
+                    if (!in_array($proration_mode, $valid_modes, true)) {
+                        $order->add_order_note(
+                            sprintf(
+                                // translators: %s: Invalid proration mode
+                                __('Invalid proration mode detected: %s. Using default: prorated_immediately', 'dodo-payments-for-woocommerce'),
+                                esc_html($proration_mode)
+                            )
+                        );
+                        $proration_mode = 'prorated_immediately';
+                    }
 
                     $this->dodo_payments_api->change_plan(
                         $dodo_subscription_id,
@@ -1753,8 +1777,21 @@ function dodo_payments_init()
                             // Use get_subtotal() (before coupon discounts) so the coupon
                             // is only applied once by Dodo, not double-counted here.
                             $item_subtotal = (float) $item->get_subtotal();
+
+                            // Validate subtotal - skip if negative or invalid
+                            if ($item_subtotal < 0) {
+                                $order->add_order_note(
+                                    sprintf(
+                                        // translators: %1$d: Product ID
+                                        __('Invalid item subtotal detected for product %1$d, skipping sync.', 'dodo-payments-for-woocommerce'),
+                                        $local_product_id
+                                    )
+                                );
+                                continue;
+                            }
+
                             $item_qty = max(1, $item->get_quantity());
-                            $effective_unit_price = $item_subtotal / $item_qty;
+                            $effective_unit_price = $item_qty > 0 ? $item_subtotal / $item_qty : 0;
                             $catalog_price = (float) $product->get_price();
 
                             // Compare with a threshold that accounts for floating-point precision.
@@ -2181,7 +2218,7 @@ function dodo_payments_init()
                     return;
                 }
 
-                // Can be
+                // Webhook type format: 'kind.status' (e.g., 'payment.succeeded', 'subscription.active')
                 $type = $payload['type'];
                 $type_parts = explode('.', $type, 2);
 
@@ -2495,6 +2532,10 @@ function dodo_payments_init()
                         $subscription->update_status('expired', __('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
                         break;
 
+                    case 'plan_changed':
+                        $this->handle_plan_changed_webhook($payload, $subscription);
+                        break;
+
                     default:
                         $subscription->add_order_note(
                             sprintf(
@@ -2519,6 +2560,90 @@ function dodo_payments_init()
                 // TODO: handle renewal from the 'subscription.renewed' webhook when
                 // it includes the `payment_id` and pass it to `$order->payment_complete($payment_id)`.
                 // This will help the merchant link the renewal order to the payment ID.
+            }
+
+            /**
+             * Handle subscription plan changed webhook
+             *
+             * Completes pending upgrade orders when Dodo confirms a successful plan change.
+             * The order metadata _dodo_pending_plan_change stores the pending upgrade details.
+             *
+             * @param array $payload The webhook payload.
+             * @param WC_Subscription $subscription The subscription object.
+             * @return void
+             */
+            private function handle_plan_changed_webhook($payload, $subscription)
+            {
+                $dodo_subscription_id = $payload['data']['subscription_id'] ?? '';
+
+                if (empty($dodo_subscription_id)) {
+                    $this->log_debug('Plan changed webhook missing subscription_id');
+                    return;
+                }
+
+                // Find orders with pending plan changes for this subscription
+                $args = array(
+                    'limit'  => 1,
+                    'type'   => 'shop_order',
+                    'status' => array('pending', 'on-hold'),
+                    'meta_query' => array(
+                        array(
+                            'key'     => '_dodo_pending_plan_change',
+                            'compare' => 'EXISTS',
+                        ),
+                    ),
+                );
+
+                $orders = wc_get_orders($args);
+
+                foreach ($orders as $order) {
+                    $pending_change = $order->get_meta('_dodo_pending_plan_change');
+
+                    if (empty($pending_change)) {
+                        continue;
+                    }
+
+                    // Verify this order is for the same subscription that changed
+                    if (isset($pending_change['dodo_subscription_id']) && $pending_change['dodo_subscription_id'] === $dodo_subscription_id) {
+                        // Validate the pending change isn't stale (older than 1 hour)
+                        $timestamp = $pending_change['timestamp'] ?? '';
+                        if (!empty($timestamp)) {
+                            $pending_time = strtotime($timestamp);
+                            $current_time = current_time('timestamp');
+                            $one_hour_ago = $current_time - HOUR_IN_SECONDS;
+
+                            if ($pending_time < $one_hour_ago) {
+                                $this->log_debug('Stale plan change detected for order #' . $order->get_id() . ', skipping');
+                                $order->delete_meta_data('_dodo_pending_plan_change');
+                                $order->save();
+                                continue;
+                            }
+                        }
+
+                        // Verify the new product ID matches what Dodo confirmed
+                        $new_product_id = $payload['data']['product_id'] ?? '';
+                        if (!empty($new_product_id) && isset($pending_change['new_dodo_product_id']) && $pending_change['new_dodo_product_id'] !== $new_product_id) {
+                            $this->log_debug('Product ID mismatch in plan change webhook for order #' . $order->get_id());
+                            continue;
+                        }
+
+                        // Complete the order
+                        $order->payment_complete();
+                        $order->delete_meta_data('_dodo_pending_plan_change');
+                        $order->add_order_note(
+                            sprintf(
+                                // translators: %1$s: Subscription ID, %2$s: New product ID
+                                __('Subscription plan change confirmed by Dodo Payments. Subscription: %1$s, New plan: %2$s', 'dodo-payments-for-woocommerce'),
+                                $dodo_subscription_id,
+                                $new_product_id
+                            )
+                        );
+                        $order->save();
+
+                        $this->log_debug('Completed upgrade order #' . $order->get_id() . ' from plan_changed webhook');
+                        break; // Only process one matching order
+                    }
+                }
             }
 
             /**
@@ -2585,17 +2710,50 @@ function dodo_payments_init()
 
             private function create_lm_renewal_order($subscription, $payment_id)
             {
-                if (class_exists('LicenseMonks_Subscription_Renewal')) {
-                    $renewal_order = LicenseMonks_Subscription_Renewal::process_renewal($subscription);
-                    if ($renewal_order && !is_wp_error($renewal_order)) {
-                        $renewal_order->payment_complete($payment_id);
-                        $renewal_order->update_status('completed');
-                        
-                        LicenseMonks_Subscription_Lifecycle::advance_period($subscription, $renewal_order);
-                        
-                        $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
-                    }
+                if (!class_exists('LicenseMonks_Subscription_Renewal')) {
+                    $subscription->add_order_note(
+                        __('License renewal failed: LicenseMonks_Subscription_Renewal class not available', 'dodo-payments-for-woocommerce')
+                    );
+                    $this->log_debug('LM renewal failed: class not available');
+                    return;
                 }
+
+                if (!class_exists('LicenseMonks_Subscription_Lifecycle')) {
+                    $subscription->add_order_note(
+                        __('License renewal failed: LicenseMonks_Subscription_Lifecycle class not available', 'dodo-payments-for-woocommerce')
+                    );
+                    $this->log_debug('LM renewal failed: lifecycle class not available');
+                    return;
+                }
+
+                $renewal_order = LicenseMonks_Subscription_Renewal::process_renewal($subscription);
+
+                if (is_wp_error($renewal_order)) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %s: Error message
+                            __('License renewal failed: %s', 'dodo-payments-for-woocommerce'),
+                            $renewal_order->get_error_message()
+                        )
+                    );
+                    $this->log_debug('LM renewal failed: ' . $renewal_order->get_error_message());
+                    return;
+                }
+
+                if (!$renewal_order) {
+                    $subscription->add_order_note(
+                        __('License renewal failed: process_renewal returned empty', 'dodo-payments-for-woocommerce')
+                    );
+                    $this->log_debug('LM renewal failed: no order returned from process_renewal');
+                    return;
+                }
+
+                $renewal_order->payment_complete($payment_id);
+                $renewal_order->update_status('completed');
+
+                LicenseMonks_Subscription_Lifecycle::advance_period($subscription, $renewal_order);
+
+                $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
             }
 
             /**

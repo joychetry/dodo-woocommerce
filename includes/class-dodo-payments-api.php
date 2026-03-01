@@ -583,11 +583,13 @@ class Dodo_Payments_API
     /**
      * Creates a subscription product in the Dodo Payments API using WooCommerce subscription product data.
      *
-     * Extracts subscription period, interval, length, trial period, and price from the WooCommerce product, converts them to the API's expected format, and sends a request to create a recurring price product. Throws an exception if the WooCommerce Subscriptions plugin is not available or if the API request fails.
+     * Supports both WooCommerce Subscriptions (WCS) and License Monks (LM) subscription products.
+     * Extracts subscription period, interval, length, trial period, and price from the product,
+     * converts them to the API's expected format, and sends a request to create a recurring price product.
      *
      * @param WC_Product $product The WooCommerce subscription product to create in the API.
      * @return array{product_id: string} The created product's data from the Dodo Payments API.
-     * @throws \Exception If the WooCommerce Subscriptions plugin is missing or the API request fails.
+     * @throws \Exception If neither WCS nor LM subscription handler is available, or the API request fails.
      */
     public function create_subscription_product($product)
     {
@@ -720,11 +722,13 @@ class Dodo_Payments_API
     /**
      * Updates an existing subscription product in the Dodo Payments API using WooCommerce subscription product data.
      *
-     * Retrieves the current product from the API, extracts subscription details from the WooCommerce product, and updates the API product while preserving existing discount and tax settings. Throws an exception if the WooCommerce Subscriptions plugin is missing, the product is not found, or the API request fails.
+     * Supports both WooCommerce Subscriptions (WCS) and License Monks (LM) subscription products.
+     * Retrieves the current product from the API, extracts subscription details from the WooCommerce product,
+     * and updates the API product while preserving existing discount and tax settings.
      *
      * @param string $dodo_product_id The Dodo Payments product ID to update.
      * @param WC_Product $product The WooCommerce subscription product to sync.
-     * @throws \Exception If the WooCommerce Subscriptions plugin is missing, the product is not found, or the API update fails.
+     * @throws \Exception If neither WCS nor LM subscription handler is available, the product is not found, or the API update fails.
      */
     public function update_subscription_product($dodo_product_id, $product)
     {
@@ -1203,8 +1207,11 @@ class Dodo_Payments_API
      */
     public function create_product_with_custom_price($name, $price_in_cents)
     {
+        // Sanitize product name for defense in depth
+        $sanitized_name = sanitize_text_field($name);
+
         $body = array(
-            'name'         => $name,
+            'name'         => $sanitized_name,
             'description'  => 'License upgrade (prorated)',
             'price'        => array(
                 'type'                     => 'one_time_price',
