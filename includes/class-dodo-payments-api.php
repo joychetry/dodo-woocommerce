@@ -37,7 +37,11 @@ class Dodo_Payments_API
      */
     private function log_debug($message)
     {
-        if (defined('WP_DEBUG') && WP_DEBUG) {
+        if (function_exists('wc_get_logger')) {
+            $logger = wc_get_logger();
+            $logger->debug('Dodo Payments API: ' . $message, array('source' => 'dodo-payments'));
+        } elseif (defined('WP_DEBUG') && WP_DEBUG) {
+            // Fallback to error log if WooCommerce logger is not available
             error_log('Dodo Payments API: ' . $message);
         }
     }
@@ -307,7 +311,7 @@ class Dodo_Payments_API
             $error_data = json_decode($error_body, true);
             $error_message = isset($error_data['message']) ? $error_data['message'] : $error_body;
 
-            throw new Exception("Failed to create checkout session (HTTP " . $response_code . "): " . esc_html($error_message));
+            throw new Exception("Failed to create checkout session (HTTP " . esc_html($response_code) . "): " . esc_html($error_message));
         }
 
         $response_body = wp_remote_retrieve_body($res);
@@ -583,63 +587,106 @@ class Dodo_Payments_API
     /**
      * Creates a subscription product in the Dodo Payments API using WooCommerce subscription product data.
      *
-     * Extracts subscription period, interval, length, trial period, and price from the WooCommerce product, converts them to the API's expected format, and sends a request to create a recurring price product. Throws an exception if the WooCommerce Subscriptions plugin is not available or if the API request fails.
+     * Supports both WooCommerce Subscriptions (WCS) and License Monks (LM) subscription products.
+     * Extracts subscription period, interval, length, trial period, and price from the product,
+     * converts them to the API's expected format, and sends a request to create a recurring price product.
      *
      * @param WC_Product $product The WooCommerce subscription product to create in the API.
      * @return array{product_id: string} The created product's data from the Dodo Payments API.
-     * @throws \Exception If the WooCommerce Subscriptions plugin is missing or the API request fails.
+     * @throws \Exception If neither WCS nor LM subscription handler is available, or the API request fails.
      */
     public function create_subscription_product($product)
     {
-        if (!class_exists('WC_Subscriptions_Product')) {
-            throw new Exception('WooCommerce Subscriptions plugin is required for subscription products');
-        }
+        if (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product)) {
+            // Get subscription details using WCS
+            $period = WC_Subscriptions_Product::get_period($product);
+            $period_count = WC_Subscriptions_Product::get_interval($product);
+            $length = WC_Subscriptions_Product::get_length($product);
 
-        $stripped_description = wp_strip_all_tags($product->get_description());
-        $truncated_description = mb_substr($stripped_description, 0, min(999, mb_strlen($stripped_description)));
-
-        // Get subscription details
-        $period = WC_Subscriptions_Product::get_period($product);
-        $period_count = WC_Subscriptions_Product::get_interval($product);
-        $length = WC_Subscriptions_Product::get_length($product);
-
-        if ($length === 0) {
-            // default to 10 years
-            switch ($period) {
-                case 'day':
-                    $length = 3650;
-                    break;
-                case 'week':
-                    $length = 520;
-                    break;
-                case 'month':
-                    $length = 120;
-                    break;
-                case 'year':
-                    $length = 10;
-                    break;
+            if ($length === 0) {
+                // default to 10 years
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
             }
-        }
 
-        $trial_length = WC_Subscriptions_Product::get_trial_length($product);
-        $trial_period = WC_Subscriptions_Product::get_trial_period($product);
+            $trial_length = WC_Subscriptions_Product::get_trial_length($product);
+            $trial_period = WC_Subscriptions_Product::get_trial_period($product);
 
-        $trial_period_days = 0;
-        if ($trial_length > 0) {
-            switch ($trial_period) {
-                case 'day':
-                    $trial_period_days = $trial_length;
-                    break;
-                case 'week':
-                    $trial_period_days = $trial_length * 7;
-                    break;
-                case 'month':
-                    $trial_period_days = $trial_length * 30;
-                    break;
-                case 'year':
-                    $trial_period_days = $trial_length * 365;
-                    break;
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
             }
+        } elseif ($product->get_type() === 'lm-subscription') {
+            // Get subscription details using LM Meta
+            $period = $product->get_meta('_billing_period') ?: 'month';
+            $period_count = (int) ($product->get_meta('_billing_interval') ?: 1);
+            $length = (int) ($product->get_meta('_billing_cycles') ?: 0);
+
+            if ($length === 0) {
+                // default to 10 years
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
+            }
+
+            $trial_length = (int) ($product->get_meta('_trial_interval') ?: 0);
+            $trial_period = $product->get_meta('_trial_period') ?: 'day';
+
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
+            }
+        } else {
+            throw new Exception('No subscription product handler available');
         }
 
         $price_data = array(
@@ -679,69 +726,114 @@ class Dodo_Payments_API
     /**
      * Updates an existing subscription product in the Dodo Payments API using WooCommerce subscription product data.
      *
-     * Retrieves the current product from the API, extracts subscription details from the WooCommerce product, and updates the API product while preserving existing discount and tax settings. Throws an exception if the WooCommerce Subscriptions plugin is missing, the product is not found, or the API request fails.
+     * Supports both WooCommerce Subscriptions (WCS) and License Monks (LM) subscription products.
+     * Retrieves the current product from the API, extracts subscription details from the WooCommerce product,
+     * and updates the API product while preserving existing discount and tax settings.
      *
      * @param string $dodo_product_id The Dodo Payments product ID to update.
      * @param WC_Product $product The WooCommerce subscription product to sync.
-     * @throws \Exception If the WooCommerce Subscriptions plugin is missing, the product is not found, or the API update fails.
+     * @throws \Exception If neither WCS nor LM subscription handler is available, the product is not found, or the API update fails.
      */
     public function update_subscription_product($dodo_product_id, $product)
     {
-        if (!class_exists('WC_Subscriptions_Product')) {
-            throw new Exception('WooCommerce Subscriptions plugin is required for subscription products');
-        }
-
         $dodo_product = $this->get_product($dodo_product_id);
-
         if (!$dodo_product) {
-            throw new Exception('Product (' . esc_html($dodo_product_id) . ') not found');
+            throw new Exception('Product not found in Dodo Payments API.');
         }
 
-        $stripped_description = wp_strip_all_tags($product->get_description());
-        $truncated_description = mb_substr($stripped_description, 0, min(999, mb_strlen($stripped_description)));
+        if (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product)) {
+            $period = WC_Subscriptions_Product::get_period($product);
+            $period_count = WC_Subscriptions_Product::get_interval($product);
+            $length = WC_Subscriptions_Product::get_length($product);
 
-        $period = WC_Subscriptions_Product::get_period($product);
-        $period_count = WC_Subscriptions_Product::get_interval($product);
-        $length = WC_Subscriptions_Product::get_length($product);
-
-        if ($length === 0) {
-            // default to 10 years, if subscription length is not set
-            switch ($period) {
-                case 'day':
-                    $length = 3650;
-                    break;
-                case 'week':
-                    $length = 520;
-                    break;
-                case 'month':
-                    $length = 120;
-                    break;
-                case 'year':
-                    $length = 10;
-                    break;
+            if ($length === 0) {
+                // default to 10 years, if subscription length is not set
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
             }
-        }
 
-        $trial_length = WC_Subscriptions_Product::get_trial_length($product);
-        $trial_period = WC_Subscriptions_Product::get_trial_period($product);
+            $trial_length = WC_Subscriptions_Product::get_trial_length($product);
+            $trial_period = WC_Subscriptions_Product::get_trial_period($product);
 
-        $trial_period_days = 0;
-        if ($trial_length > 0) {
-            switch ($trial_period) {
-                case 'day':
-                    $trial_period_days = $trial_length;
-                    break;
-                case 'week':
-                    $trial_period_days = $trial_length * 7;
-                    break;
-                case 'month':
-                    $trial_period_days = $trial_length * 30;
-                    break;
-                case 'year':
-                    $trial_period_days = $trial_length * 365;
-                    break;
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
             }
+        } elseif ($product->get_type() === 'lm-subscription') {
+            $period = $product->get_meta('_billing_period') ?: 'month';
+            $period_count = (int) ($product->get_meta('_billing_interval') ?: 1);
+            $length = (int) ($product->get_meta('_billing_cycles') ?: 0);
+
+            if ($length === 0) {
+                // default to 10 years, if subscription length is not set
+                switch ($period) {
+                    case 'day':
+                        $length = 3650;
+                        break;
+                    case 'week':
+                        $length = 520;
+                        break;
+                    case 'month':
+                        $length = 120;
+                        break;
+                    case 'year':
+                        $length = 10;
+                        break;
+                }
+            }
+
+            $trial_length = (int) ($product->get_meta('_trial_interval') ?: 0);
+            $trial_period = $product->get_meta('_trial_period') ?: 'day';
+
+            $trial_period_days = 0;
+            if ($trial_length > 0) {
+                switch ($trial_period) {
+                    case 'day':
+                        $trial_period_days = $trial_length;
+                        break;
+                    case 'week':
+                        $trial_period_days = $trial_length * 7;
+                        break;
+                    case 'month':
+                        $trial_period_days = $trial_length * 30;
+                        break;
+                    case 'year':
+                        $trial_period_days = $trial_length * 365;
+                        break;
+                }
+            }
+        } else {
+            throw new Exception('No subscription product handler available');
         }
+
+        $description = $product->get_short_description() ?: $product->get_description();
+        // Dodo Payments API has a 500 character limit for descriptions
+        $truncated_description = mb_substr(wp_strip_all_tags($description), 0, 500);
 
         $price_data = array(
             'currency' => get_woocommerce_currency(),
@@ -1048,8 +1140,106 @@ class Dodo_Payments_API
             return $response_body['invoice_pdf'];
         }
 
-        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . print_r($response_body, true));
+        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . wc_print_r($response_body, true));
         return false;
+    }
+
+    /**
+     * Changes the plan of an existing subscription in the Dodo Payments API.
+     *
+     * Uses the Change Plan API to upgrade or downgrade a subscription to a different
+     * product tier. Dodo handles proration natively based on the billing mode.
+     *
+     * @param string      $dodo_subscription_id The ID of the subscription to change.
+     * @param string      $new_product_id       The Dodo product ID of the new plan.
+     * @param int         $quantity             Number of units. Must be at least 1.
+     * @param string      $proration_mode       One of 'prorated_immediately', 'full_immediately', 'difference_immediately'.
+     * @param string      $on_payment_failure   'prevent_change' or 'apply_change'. Defaults to 'prevent_change'.
+     *
+     * @return void
+     * @throws \Exception If the API request fails.
+     */
+    public function change_plan($dodo_subscription_id, $new_product_id, $quantity = 1, $proration_mode = 'prorated_immediately', $on_payment_failure = 'prevent_change')
+    {
+        $body = array(
+            'product_id'             => $new_product_id,
+            'quantity'               => $quantity,
+            'proration_billing_mode' => $proration_mode,
+            'on_payment_failure'     => $on_payment_failure,
+        );
+
+        $res = $this->post("/subscriptions/{$dodo_subscription_id}/change-plan", $body);
+
+        if (is_wp_error($res)) {
+            throw new Exception("Failed to change subscription plan: " . esc_html($res->get_error_message()));
+        }
+
+        $response_code = wp_remote_retrieve_response_code($res);
+
+        if ($response_code === 409) {
+            throw new Exception("A pending plan change already exists for this subscription.");
+        }
+
+        if ($response_code === 422) {
+            $error_body = wp_remote_retrieve_body($res);
+            throw new Exception("Subscription plan change not supported: " . esc_html($error_body));
+        }
+
+        if ($response_code !== 200) {
+            $error_body = wp_remote_retrieve_body($res);
+            throw new Exception("Failed to change subscription plan (HTTP " . esc_html($response_code) . "): " . esc_html($error_body));
+        }
+
+        return;
+    }
+
+    /**
+     * Creates a one-time product with a specific price for prorated upgrade checkouts.
+     *
+     * Used when a customer upgrades a one-time license and only needs to pay
+     * the prorated difference. Creates a temporary product in Dodo with the
+     * exact upgrade price.
+     *
+     * NOTE: These temporary products are not automatically cleaned up. Consider
+     * implementing a scheduled task to archive or delete old upgrade products.
+     *
+     * @param string $name           Display name for the upgrade product.
+     * @param int    $price_in_cents Price in lowest currency denomination (e.g. cents).
+     *
+     * @return array{product_id: string} The created product data.
+     * @throws \Exception If the API request fails.
+     */
+    public function create_product_with_custom_price($name, $price_in_cents)
+    {
+        // Sanitize product name for defense in depth
+        $sanitized_name = sanitize_text_field($name);
+
+        $body = array(
+            'name'         => $sanitized_name,
+            'description'  => 'License upgrade (prorated)',
+            'price'        => array(
+                'type'                     => 'one_time_price',
+                'currency'                 => get_woocommerce_currency(),
+                'price'                    => (int) $price_in_cents,
+                'discount'                 => 0,
+                'purchasing_power_parity'  => false,
+                'tax_inclusive'            => $this->global_tax_inclusive,
+            ),
+            'tax_category' => $this->global_tax_category,
+        );
+
+        $res = $this->post('/products', $body);
+
+        if (is_wp_error($res)) {
+            throw new Exception('Failed to create upgrade product: ' . esc_html($res->get_error_message()));
+        }
+
+        if (wp_remote_retrieve_response_code($res) !== 200) {
+            $error_body = wp_remote_retrieve_body($res);
+            throw new Exception('Failed to create upgrade product: ' . esc_html($error_body));
+        }
+
+        return json_decode(wp_remote_retrieve_body($res), true);
     }
 
     /**

@@ -46,6 +46,8 @@ register_activation_hook(__FILE__, function () {
     Dodo_Payments_Payment_DB::create_table();
     Dodo_Payments_Coupon_DB::create_table();
     Dodo_Payments_Subscription_DB::create_table();
+    // Flag to flush rewrite rules on next init
+    update_option('dodo_payments_flush_rewrite_rules', true);
 });
 
 // Make the plugin HPOS compatible
@@ -133,6 +135,11 @@ function dodo_payments_init()
                 // Invoice display in My Account
                 add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
                 add_action('init', array($this, 'add_invoice_endpoint'));
+                add_action('init', array($this, 'maybe_flush_rewrite_rules'));
+
+                // Invoice display in My Account orders table (frontend for customers)
+                add_filter('woocommerce_account_orders_columns', array($this, 'add_myaccount_invoice_column'), 10, 1);
+                add_action('woocommerce_account_orders_column_invoice', array($this, 'render_myaccount_invoice_column'), 10, 1);
 
                 // Invoice display in admin (HPOS compatible)
                 add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
@@ -163,6 +170,123 @@ function dodo_payments_init()
                 if (class_exists('WC_Subscriptions')) {
                     add_action('woocommerce_subscription_status_updated', array($this, 'handle_subscription_status_updated'), 10, 3);
                     add_action('woocommerce_subscription_dates_updated', array($this, 'handle_subscription_date_change'), 10, 2);
+                }
+
+                if (class_exists('LicenseMonks_Subscription')) {
+                    add_action('licensemonks/subscription/status/updated', array($this, 'handle_lm_subscription_status_updated'), 10, 3);
+                    // Date changes sync not supported for LM either yet
+                }
+            }
+
+            public function handle_lm_subscription_status_updated($subscription, $new_status, $old_status)
+            {
+                if ($subscription->get_payment_method() !== $this->id) {
+                    return;
+                }
+
+                // Strip wc- prefix if present for uniform matching
+                $new_status = str_starts_with($new_status, 'wc-') ? substr($new_status, 3) : $new_status;
+
+                switch ($new_status) {
+                    case 'on-hold':
+                        $this->suspend_lm_subscription($subscription);
+                        break;
+                    case 'pending-cancel':
+                        $this->cancel_lm_subscription_at_next_billing($subscription);
+                        break;
+                    case 'cancelled':
+                    case 'expired':
+                        $this->cancel_lm_subscription($subscription);
+                        break;
+                    case 'active':
+                        if (str_contains($old_status, 'on-hold')) {
+                            $this->reactivate_lm_subscription($subscription);
+                        }
+                        break;
+                }
+            }
+
+            private function suspend_lm_subscription($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->pause_subscription($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription paused in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to pause subscription in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+
+            private function cancel_lm_subscription($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->cancel_subscription($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to cancel subscription in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+
+            private function cancel_lm_subscription_at_next_billing($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->cancel_subscription_at_next_billing_date($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription set to cancel at end of billing cycle in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to set subscription to cancel at next billing date in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
+                }
+            }
+
+            private function reactivate_lm_subscription($subscription)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+                if (!$dodo_subscription_id) {
+                    return;
+                }
+
+                try {
+                    $this->dodo_payments_api->resume_subscription($dodo_subscription_id);
+                    $subscription->add_order_note(__('Subscription resumed in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                } catch (\Exception $e) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Failed to resume subscription in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage()
+                        )
+                    );
                 }
             }
 
@@ -227,7 +351,11 @@ function dodo_payments_init()
              */
             private function log_debug($message)
             {
-                if (defined('WP_DEBUG') && WP_DEBUG) {
+                if (function_exists('wc_get_logger')) {
+                    $logger = wc_get_logger();
+                    $logger->debug('Dodo Payments: ' . $message, array('source' => 'dodo-payments'));
+                } elseif (defined('WP_DEBUG') && WP_DEBUG) {
+                    // Fallback to error log if WooCommerce logger is not available
                     error_log('Dodo Payments: ' . $message);
                 }
             }
@@ -392,6 +520,20 @@ function dodo_payments_init()
             }
 
             /**
+             * Flushes rewrite rules if flagged on plugin activation
+             *
+             * @return void
+             * @since 0.5.0
+             */
+            public function maybe_flush_rewrite_rules()
+            {
+                if (get_option('dodo_payments_flush_rewrite_rules')) {
+                    delete_option('dodo_payments_flush_rewrite_rules');
+                    flush_rewrite_rules();
+                }
+            }
+
+            /**
              * Displays invoice download link on order details page
              *
              * @param WC_Order $order The WooCommerce order.
@@ -486,6 +628,60 @@ function dodo_payments_init()
             }
 
             /**
+             * Adds invoice column to My Account orders table
+             *
+             * @param array $columns Existing columns.
+             * @return array Modified columns.
+             * @since 0.5.0
+             */
+            public function add_myaccount_invoice_column($columns)
+            {
+                $columns['invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
+                return $columns;
+            }
+
+            /**
+             * Renders invoice column content in My Account orders table
+             *
+             * Note: This action receives order ID (not WC_Order object) in WooCommerce.
+             *
+             * @param mixed $order_or_order_id The order object or order ID.
+             * @return void
+             * @since 0.5.0
+             */
+            public function render_myaccount_invoice_column($order_or_order_id)
+            {
+                // Handle both order object and order ID for compatibility
+                if (!is_object($order_or_order_id)) {
+                    $order = wc_get_order($order_or_order_id);
+                } else {
+                    $order = $order_or_order_id;
+                }
+
+                if (!$order instanceof WC_Order) {
+                    echo '—';
+                    return;
+                }
+
+                // Only show for Dodo Payments orders
+                if ($order->get_payment_method() !== $this->id) {
+                    echo '—';
+                    return;
+                }
+
+                $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+                $invoice_url = $invoice_helper->get_invoice_url($order);
+
+                if ($invoice_url) {
+                    echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button button-small" title="' . esc_attr__('View Invoice', 'dodo-payments-for-woocommerce') . '">';
+                    echo esc_html__('View', 'dodo-payments-for-woocommerce');
+                    echo '</a>';
+                } else {
+                    echo '<span style="color: #999;">' . esc_html__('N/A', 'dodo-payments-for-woocommerce') . '</span>';
+                }
+            }
+
+            /**
              * Adds admin hooks for invoice display (HPOS compatible)
              *
              * @return void
@@ -505,7 +701,7 @@ function dodo_payments_init()
                 if ($hpos_enabled) {
                     // HPOS: Add column to orders table
                     add_filter('manage_woocommerce_page_wc-orders_columns', array($this, 'add_invoice_column'), 20);
-                    add_action('woocommerce_shop_order_list_table_columns', array($this, 'render_invoice_column'), 20);
+                    add_action('woocommerce_shop_order_list_table_column_content', array($this, 'render_invoice_column_hpos'), 20, 2);
                 } else {
                     // Legacy: Add column to orders table
                     add_filter('manage_shop_order_posts_columns', array($this, 'add_invoice_column'), 20);
@@ -543,33 +739,17 @@ function dodo_payments_init()
             /**
              * Renders invoice column content for HPOS orders table
              *
+             * @param WC_Order $order The order object.
              * @param string $column Column name.
              * @return void
              * @since 0.5.0
              */
-            public function render_invoice_column($column)
+            public function render_invoice_column_hpos($order, $column)
             {
                 if ($column !== 'dodo_invoice') {
                     return;
                 }
 
-                // Get order from global context (HPOS)
-                // WooCommerce sets $the_order global when rendering each row
-                global $the_order;
-                
-                $order = null;
-                
-                // Try to get order from global first
-                if ($the_order instanceof WC_Order) {
-                    $order = $the_order;
-                } else {
-                    // Fallback: try to get from list table object
-                    global $wp_list_table;
-                    if (isset($wp_list_table) && method_exists($wp_list_table, 'get_current_order')) {
-                        $order = $wp_list_table->get_current_order();
-                    }
-                }
-                
                 if (!$order instanceof WC_Order) {
                     echo '—';
                     return;
@@ -756,11 +936,13 @@ function dodo_payments_init()
                 // The script is loaded from jsDelivr CDN which is the official distribution channel.
                 // Security: The SDK only communicates with Dodo Payments servers and does not
                 // execute arbitrary code on your site.
+                // Note: External script loading is allowed for payment processor SDKs per WordPress.org guidelines.
+                // An exception will be requested during plugin review if needed.
                 wp_enqueue_script(
                     'dodo-payments-checkout-sdk',
                     'https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js',
                     array(),
-                    null,
+                    '1.0.0', // Version for cache busting - will be updated with SDK releases
                     true
                 );
 
@@ -1068,17 +1250,34 @@ function dodo_payments_init()
                 // Also check for subscription_id if this is a subscription order
                 $subscription_id = isset($_GET['subscription_id']) ? sanitize_text_field(wp_unslash($_GET['subscription_id'])) : '';
                 
-                if ($subscription_id && class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
-                    $subscription_orders = wcs_get_subscriptions_for_order($order_id);
+                if ($subscription_id) {
+                    $subscription_found = false;
                     
-                    if (!empty($subscription_orders)) {
-                        $subscription = reset($subscription_orders);
+                    if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
+                        $subscription_orders = wcs_get_subscriptions_for_order($order_id);
                         
+                        if (!empty($subscription_orders)) {
+                            $subscription = reset($subscription_orders);
+                            $subscription_found = $subscription;
+                        }
+                    } else {
+                        // Check for License Monks subscriptions
+                        $lm_subscriptions = wc_get_orders(array(
+                            'type'   => 'lm_subscription',
+                            'parent' => $order_id,
+                            'limit'  => 1,
+                        ));
+                        if (!empty($lm_subscriptions)) {
+                            $subscription_found = reset($lm_subscriptions);
+                        }
+                    }
+                    
+                    if ($subscription_found) {
                         // Check if already mapped
                         $existing_wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
                         
                         if (!$existing_wc_subscription_id) {
-                            Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $subscription_id);
+                            Dodo_Payments_Subscription_DB::save_mapping($subscription_found->get_id(), $subscription_id);
                             
                             $order->add_order_note(
                                 sprintf(
@@ -1111,6 +1310,21 @@ function dodo_payments_init()
                 
                 // Check if order contains subscription products
                 $contains_subscription = $this->order_contains_subscription($order);
+
+                // Detect License Monks upgrade orders
+                $upgrade_meta = null;
+                foreach ($order->get_items() as $item) {
+                    $meta = $item->get_meta('licensemonks_upgrade', true);
+                    if (!empty($meta) && !empty($meta['license_id'])) {
+                        $upgrade_meta = $meta;
+                        break;
+                    }
+                }
+
+                // Subscription upgrades: use Dodo's native changePlan API
+                if ($upgrade_meta && $contains_subscription) {
+                    return $this->handle_subscription_upgrade($order, $upgrade_meta);
+                }
 
                 try {
                     $synced_products = $this->sync_products($order);
@@ -1264,10 +1478,27 @@ function dodo_payments_init()
                         if (isset($response['payment_link'])) {
                             if (isset($response['subscription_id'])) {
                                 // Save the subscription mapping
-                                $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
-                                if (!empty($subscription_order)) {
-                                    $subscription = reset($subscription_order);
-                                    Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $response['subscription_id']);
+                                $subscription_found = false;
+
+                                if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
+                                    $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
+                                    if (!empty($subscription_order)) {
+                                        $subscription_found = reset($subscription_order);
+                                    }
+                                } else {
+                                    // Check for License Monks subscriptions
+                                    $lm_subscriptions = wc_get_orders(array(
+                                        'type'   => 'lm_subscription',
+                                        'parent' => $order->get_id(),
+                                        'limit'  => 1,
+                                    ));
+                                    if (!empty($lm_subscriptions)) {
+                                        $subscription_found = reset($lm_subscriptions);
+                                    }
+                                }
+
+                                if ($subscription_found) {
+                                    Dodo_Payments_Subscription_DB::save_mapping($subscription_found->get_id(), $response['subscription_id']);
 
                                     $order->add_order_note(
                                         sprintf(
@@ -1331,6 +1562,187 @@ function dodo_payments_init()
             }
 
             /**
+             * Handles subscription upgrades using Dodo's native changePlan API.
+             *
+             * Bypasses sync_products() and checkout session creation entirely.
+             * Dodo handles proration natively based on the selected billing mode.
+             *
+             * @param \WC_Order $order        The WooCommerce order.
+             * @param array     $upgrade_meta The licensemonks_upgrade meta data.
+             * @return array{result: string, redirect?: string}
+             */
+            private function handle_subscription_upgrade($order, $upgrade_meta)
+            {
+                try {
+                    // Find the existing Dodo subscription ID from the original license's order
+                    $license_id = absint($upgrade_meta['license_id']);
+
+                    // Look up WC subscription from original order via license
+                    $dodo_subscription_id = null;
+
+                    if (class_exists('LicenseMonks_License_Generator') && function_exists('wcs_get_subscriptions_for_order')) {
+                        $license = LicenseMonks_License_Generator::get_license($license_id);
+
+                        if (!$license) {
+                            throw new Exception(sprintf(
+                                /* translators: %d: License ID */
+                                __('License not found. License ID: %d', 'dodo-payments-for-woocommerce'),
+                                $license_id
+                            ));
+                        }
+
+                        if (empty($license->order_id)) {
+                            throw new Exception(sprintf(
+                                /* translators: %d: License ID */
+                                __('License has no associated order. License ID: %d', 'dodo-payments-for-woocommerce'),
+                                $license_id
+                            ));
+                        }
+
+                        // Verify license ownership - ensure current user owns this license
+                        $license_user_id = isset($license->user_id) ? absint($license->user_id) : 0;
+                        $current_user_id = get_current_user_id();
+
+                        if ($license_user_id > 0 && $current_user_id > 0 && $license_user_id !== $current_user_id) {
+                            // Check if current user has capability to upgrade licenses (e.g., shop manager)
+                            if (!current_user_can('manage_woocommerce')) {
+                                throw new Exception(__('You do not have permission to upgrade this license.', 'dodo-payments-for-woocommerce'));
+                            }
+                        }
+
+                        $subscriptions = wcs_get_subscriptions_for_order($license->order_id);
+                        if (empty($subscriptions)) {
+                            throw new Exception(sprintf(
+                                /* translators: %1$d: License ID, %2$d: Order ID */
+                                __('No subscription found for license. License ID: %1$d, Order ID: %2$d', 'dodo-payments-for-woocommerce'),
+                                $license_id,
+                                $license->order_id
+                            ));
+                        }
+
+                        $subscription = reset($subscriptions);
+                        $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+
+                        if (!$dodo_subscription_id) {
+                            throw new Exception(sprintf(
+                                /* translators: %1$d: License ID, %2$d: Subscription ID */
+                                __('No Dodo subscription mapping found. License ID: %1$d, WC Subscription ID: %2$d', 'dodo-payments-for-woocommerce'),
+                                $license_id,
+                                $subscription->get_id()
+                            ));
+                        }
+                    } else {
+                        if (!class_exists('LicenseMonks_License_Generator')) {
+                            throw new Exception(__('License Monks plugin is not active.', 'dodo-payments-for-woocommerce'));
+                        }
+                        if (!function_exists('wcs_get_subscriptions_for_order')) {
+                            throw new Exception(__('WooCommerce Subscriptions is not active.', 'dodo-payments-for-woocommerce'));
+                        }
+                    }
+
+                    // Get the new product from the order
+                    $new_wc_product = null;
+                    foreach ($order->get_items() as $item) {
+                        $new_wc_product = $item->get_product();
+                        break;
+                    }
+
+                    if (!$new_wc_product) {
+                        throw new Exception('No product found in upgrade order.');
+                    }
+
+                    $new_dodo_product_id = Dodo_Payments_Product_DB::get_dodo_product_id($new_wc_product->get_id());
+
+                    // If new product isn't mapped to Dodo yet, create it
+                    if (!$new_dodo_product_id) {
+                        $response_body = $this->dodo_payments_api->create_subscription_product($new_wc_product);
+                        $new_dodo_product_id = $response_body['product_id'];
+                        Dodo_Payments_Product_DB::save_mapping($new_wc_product->get_id(), $new_dodo_product_id);
+                    }
+
+                    // Execute the plan change via Dodo's changePlan API
+                    // Proration mode can be filtered to allow customization:
+                    // 'prorated_immediately' - Charge prorated amount now
+                    // 'full_immediately' - Charge full amount of new plan now
+                    // 'difference_immediately' - Charge only the difference if upgrading
+                    $valid_modes = array('prorated_immediately', 'full_immediately', 'difference_immediately');
+                    $proration_mode = apply_filters('dodo_payments_subscription_upgrade_proration_mode', 'prorated_immediately', $order, $upgrade_meta);
+
+                    // Validate proration mode - fallback to default if invalid
+                    if (!in_array($proration_mode, $valid_modes, true)) {
+                        $order->add_order_note(
+                            sprintf(
+                                // translators: %s: Invalid proration mode
+                                __('Invalid proration mode detected: %s. Using default: prorated_immediately', 'dodo-payments-for-woocommerce'),
+                                esc_html($proration_mode)
+                            )
+                        );
+                        $proration_mode = 'prorated_immediately';
+                    }
+
+                    $this->dodo_payments_api->change_plan(
+                        $dodo_subscription_id,
+                        $new_dodo_product_id,
+                        1,
+                        $proration_mode,
+                        'prevent_change'
+                    );
+
+                    $order->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Subscription ID, %2$s: New product name
+                            __('Subscription plan change initiated via Dodo Payments. Subscription: %1$s, New plan: %2$s (pending payment confirmation)', 'dodo-payments-for-woocommerce'),
+                            $dodo_subscription_id,
+                            $new_wc_product->get_name()
+                        )
+                    );
+
+                    // Store the pending plan change details for webhook processing
+                    // The timestamp allows detecting stale entries if the webhook is delayed or missed
+                    $order->update_meta_data('_dodo_pending_plan_change', array(
+                        'dodo_subscription_id' => $dodo_subscription_id,
+                        'new_dodo_product_id'  => $new_dodo_product_id,
+                        'new_wc_product_id'    => $new_wc_product->get_id(),
+                        'timestamp'            => current_time('mysql'),
+                        'order_id'             => $order->get_id(),
+                    ));
+                    $order->save();
+
+                    // Don't call payment_complete() here — with on_payment_failure='prevent_change',
+                    // the 200 response means the plan change was initiated, not that payment succeeded.
+                    // The subscription.plan_changed webhook will confirm payment and complete the order.
+
+                    return array(
+                        'result'   => 'success',
+                        'redirect' => $this->get_return_url($order)
+                    );
+                } catch (Exception $e) {
+                    $error_message = $e->getMessage();
+
+                    $order->add_order_note(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Dodo Payments subscription upgrade failed: %1$s', 'dodo-payments-for-woocommerce'),
+                            $error_message
+                        )
+                    );
+
+                    $this->log_debug('Subscription upgrade error for Order #' . $order->get_id() . ': ' . $error_message);
+
+                    wc_add_notice(
+                        sprintf(
+                            // translators: %1$s: Error message
+                            __('Upgrade failed: %1$s', 'dodo-payments-for-woocommerce'),
+                            $error_message
+                        ),
+                        'error'
+                    );
+
+                    return array('result' => 'failure');
+                }
+            }
+
+            /**
              * Syncs products from WooCommerce to Dodo Payments
              *
              * @param \WC_Order $order
@@ -1351,6 +1763,8 @@ function dodo_payments_init()
                     $is_subscription = false;
                     if (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product)) {
                         $is_subscription = true;
+                    } elseif ($product->get_type() === 'lm-subscription') {
+                        $is_subscription = true;
                     }
 
                     // Check if product is already mapped
@@ -1366,22 +1780,83 @@ function dodo_payments_init()
                             Dodo_Payments_Product_DB::delete_mapping($local_product_id);
                             $dodo_product_id = null; // Force re-creation
                         } else {
-                            try {
-                                if ($is_subscription) {
-                                    $this->dodo_payments_api->update_subscription_product($dodo_product['product_id'], $product);
-                                } else {
-                                    $this->dodo_payments_api->update_product($dodo_product['product_id'], $product);
-                                }
-                            } catch (Exception $e) {
+                            // Use get_subtotal() (before coupon discounts) so the coupon
+                            // is only applied once by Dodo, not double-counted here.
+                            $item_subtotal = (float) $item->get_subtotal();
+
+                            // Validate subtotal - skip if negative or invalid
+                            if ($item_subtotal < 0) {
                                 $order->add_order_note(
                                     sprintf(
-                                        // translators: %1$s: Error message
-                                        __('Failed to update product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                                        $e->getMessage(),
+                                        // translators: %1$d: Product ID
+                                        __('Invalid item subtotal detected for product %1$d, skipping sync.', 'dodo-payments-for-woocommerce'),
+                                        $local_product_id
                                     )
                                 );
-
                                 continue;
+                            }
+
+                            $item_qty = max(1, $item->get_quantity());
+                            $effective_unit_price = $item_qty > 0 ? $item_subtotal / $item_qty : 0;
+                            $catalog_price = (float) $product->get_price();
+
+                            // Compare with a threshold that accounts for floating-point precision.
+                            // Using 0.001 as a safe threshold that works across most currencies
+                            // (0.01 for USD-like currencies, JPY has no decimals).
+                            $is_price_modified = abs($effective_unit_price - $catalog_price) > 0.001;
+
+                            if ($is_price_modified) {
+                                // Upgrade scenario: create a temporary Dodo product with the prorated price
+                                // instead of updating the original product's price in Dodo.
+                                // Product name includes order ID for traceability and cleanup.
+                                try {
+                                    $temp_product = $this->dodo_payments_api->create_product_with_custom_price(
+                                        sprintf(
+                                            /* translators: %s: Product name */
+                                            __('Upgrade: %s', 'dodo-payments-for-woocommerce'),
+                                            $product->get_name()
+                                        ),
+                                        (int) round($effective_unit_price * 100)
+                                    );
+                                    $dodo_product_id = $temp_product['product_id'];
+
+                                    $order->add_order_note(
+                                        sprintf(
+                                            // translators: %1$s: Product name, %2$s: Amount
+                                            __('Created temporary upgrade product in Dodo Payments for %1$s (prorated: %2$s)', 'dodo-payments-for-woocommerce'),
+                                            $product->get_name(),
+                                            wc_price($effective_unit_price)
+                                        )
+                                    );
+                                } catch (Exception $e) {
+                                    $order->add_order_note(
+                                        sprintf(
+                                            // translators: %1$s: Error message
+                                            __('Failed to create upgrade product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                                            $e->getMessage(),
+                                        )
+                                    );
+                                    continue;
+                                }
+                            } else {
+                                // Normal flow: sync full product data to Dodo
+                                try {
+                                    if ($is_subscription) {
+                                        $this->dodo_payments_api->update_subscription_product($dodo_product['product_id'], $product);
+                                    } else {
+                                        $this->dodo_payments_api->update_product($dodo_product['product_id'], $product);
+                                    }
+                                } catch (Exception $e) {
+                                    $order->add_order_note(
+                                        sprintf(
+                                            // translators: %1$s: Error message
+                                            __('Failed to update product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                                            $e->getMessage(),
+                                        )
+                                    );
+
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -1426,7 +1901,7 @@ function dodo_payments_init()
                     $mapped_products[] = array(
                         'product_id' => $dodo_product_id,
                         'quantity' => $item->get_quantity(),
-                        'amount' => (int) $product->get_price() * 100
+                        'amount' => (int) round((float) $item->get_subtotal() / max(1, $item->get_quantity()) * 100)
                     );
                 }
 
@@ -1689,6 +2164,14 @@ function dodo_payments_init()
                     }
                 }
 
+                // License Monks check
+                foreach ($order->get_items() as $item) {
+                    $product = $item->get_product();
+                    if ($product && $product->get_type() === 'lm-subscription') {
+                        return true;
+                    }
+                }
+
                 return false;
             }
 
@@ -1741,7 +2224,7 @@ function dodo_payments_init()
                     return;
                 }
 
-                // Can be
+                // Webhook type format: 'kind.status' (e.g., 'payment.succeeded', 'subscription.active')
                 $type = $payload['type'];
                 $type_parts = explode('.', $type, 2);
 
@@ -1868,8 +2351,20 @@ function dodo_payments_init()
                             $subscription_id = $payload['data']['subscription_id'];
                             $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
-                            if (function_exists('wcs_get_subscription')) {
-                                $subscription = wcs_get_subscription($wc_subscription_id);
+                            $subscription = false;
+                            
+                            if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscription')) {
+                                $subscription_order = wcs_get_subscription($wc_subscription_id);
+                                if ($subscription_order) {
+                                    $subscription = $subscription_order;
+                                }
+                            }
+                            
+                            if (!$subscription) {
+                                $lm_subscription = wc_get_order($wc_subscription_id);
+                                if ($lm_subscription && $lm_subscription->get_type() === 'lm_subscription') {
+                                    $subscription = $lm_subscription;
+                                }
                             }
 
                             if (!$subscription) {
@@ -1884,7 +2379,11 @@ function dodo_payments_init()
 
                             $dodo_subscription = $this->dodo_payments_api->get_subscription($subscription_id);
 
-                            $this->create_renewal_order($subscription, $payment_id);
+                            if ($subscription->get_type() === 'lm_subscription') {
+                                $this->create_lm_renewal_order($subscription, $payment_id);
+                            } else {
+                                $this->create_renewal_order($subscription, $payment_id);
+                            }
                         }
 
                         break;
@@ -1974,15 +2473,24 @@ function dodo_payments_init()
              */
             private function handle_subscription_webhook($payload, $status)
             {
-                if (!class_exists('WC_Subscriptions')) {
-                    return;
-                }
-
                 $subscription_id = $payload['data']['subscription_id'];
+
                 $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
                 if (!$wc_subscription_id) {
-                    $this->log_debug('Could not find WooCommerce subscription for Dodo subscription: ' . $subscription_id);
+                    $this->log_debug('Could not find WooCommerce subscription for subscription ID ' . $subscription_id);
+                    return;
+                }
+
+                $subscription = wc_get_order($wc_subscription_id);
+                
+                if ($subscription && $subscription->get_type() === 'lm_subscription') {
+                    $this->handle_lm_subscription_webhook_event($subscription, $status, $payload);
+                    return;
+                }
+                
+                if (!class_exists('WC_Subscriptions') || !function_exists('wcs_get_subscription')) {
+                    $this->log_debug('WC_Subscriptions plugin is not available. Skipping webhook handler.');
                     return;
                 }
 
@@ -2030,6 +2538,10 @@ function dodo_payments_init()
                         $subscription->update_status('expired', __('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
                         break;
 
+                    case 'plan_changed':
+                        $this->handle_plan_changed_webhook($payload, $subscription);
+                        break;
+
                     default:
                         $subscription->add_order_note(
                             sprintf(
@@ -2057,6 +2569,90 @@ function dodo_payments_init()
             }
 
             /**
+             * Handle subscription plan changed webhook
+             *
+             * Completes pending upgrade orders when Dodo confirms a successful plan change.
+             * The order metadata _dodo_pending_plan_change stores the pending upgrade details.
+             *
+             * @param array $payload The webhook payload.
+             * @param WC_Subscription $subscription The subscription object.
+             * @return void
+             */
+            private function handle_plan_changed_webhook($payload, $subscription)
+            {
+                $dodo_subscription_id = $payload['data']['subscription_id'] ?? '';
+
+                if (empty($dodo_subscription_id)) {
+                    $this->log_debug('Plan changed webhook missing subscription_id');
+                    return;
+                }
+
+                // Find orders with pending plan changes for this subscription
+                $args = array(
+                    'limit'  => 1,
+                    'type'   => 'shop_order',
+                    'status' => array('pending', 'on-hold'),
+                    'meta_query' => array(
+                        array(
+                            'key'     => '_dodo_pending_plan_change',
+                            'compare' => 'EXISTS',
+                        ),
+                    ),
+                );
+
+                $orders = wc_get_orders($args);
+
+                foreach ($orders as $order) {
+                    $pending_change = $order->get_meta('_dodo_pending_plan_change');
+
+                    if (empty($pending_change)) {
+                        continue;
+                    }
+
+                    // Verify this order is for the same subscription that changed
+                    if (isset($pending_change['dodo_subscription_id']) && $pending_change['dodo_subscription_id'] === $dodo_subscription_id) {
+                        // Validate the pending change isn't stale (older than 1 hour)
+                        $timestamp = $pending_change['timestamp'] ?? '';
+                        if (!empty($timestamp)) {
+                            $pending_time = strtotime($timestamp);
+                            $current_time = current_time('timestamp');
+                            $one_hour_ago = $current_time - HOUR_IN_SECONDS;
+
+                            if ($pending_time < $one_hour_ago) {
+                                $this->log_debug('Stale plan change detected for order #' . $order->get_id() . ', skipping');
+                                $order->delete_meta_data('_dodo_pending_plan_change');
+                                $order->save();
+                                continue;
+                            }
+                        }
+
+                        // Verify the new product ID matches what Dodo confirmed
+                        $new_product_id = $payload['data']['product_id'] ?? '';
+                        if (!empty($new_product_id) && isset($pending_change['new_dodo_product_id']) && $pending_change['new_dodo_product_id'] !== $new_product_id) {
+                            $this->log_debug('Product ID mismatch in plan change webhook for order #' . $order->get_id());
+                            continue;
+                        }
+
+                        // Complete the order
+                        $order->payment_complete();
+                        $order->delete_meta_data('_dodo_pending_plan_change');
+                        $order->add_order_note(
+                            sprintf(
+                                // translators: %1$s: Subscription ID, %2$s: New product ID
+                                __('Subscription plan change confirmed by Dodo Payments. Subscription: %1$s, New plan: %2$s', 'dodo-payments-for-woocommerce'),
+                                $dodo_subscription_id,
+                                $new_product_id
+                            )
+                        );
+                        $order->save();
+
+                        $this->log_debug('Completed upgrade order #' . $order->get_id() . ' from plan_changed webhook');
+                        break; // Only process one matching order
+                    }
+                }
+            }
+
+            /**
              * Create a renewal order for a subscription
              *
              * @param WC_Subscription $subscription
@@ -2075,6 +2671,95 @@ function dodo_payments_init()
                         $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
                     }
                 }
+            }
+
+            private function handle_lm_subscription_webhook_event($subscription, $status, $payload)
+            {
+                switch ($status) {
+                    case 'active':
+                        LicenseMonks_Subscription_Lifecycle::transition($subscription, 'active');
+                        $subscription->add_order_note(__('Subscription marked active in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'renewed':
+                        // Handled in payment.succeeded webhook instead
+                        break;
+                    case 'on_hold':
+                    case 'paused':
+                        LicenseMonks_Subscription_Lifecycle::transition($subscription, 'on-hold');
+                        $subscription->add_order_note(__('Subscription on hold in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'cancelled':
+                        LicenseMonks_Subscription_Lifecycle::transition($subscription, 'cancelled');
+                        $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'failed':
+                        LicenseMonks_Subscription_Lifecycle::put_on_hold(
+                            $subscription,
+                            __('Payment failed in Dodo Payments', 'dodo-payments-for-woocommerce')
+                        );
+                        break;
+                    case 'expired':
+                        LicenseMonks_Subscription_Lifecycle::expire($subscription);
+                        $subscription->add_order_note(__('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    default:
+                        $subscription->add_order_note(
+                            sprintf(
+                                // translators: %1$s: Webhook type
+                                __('Subscription webhook received from Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                                $payload['type']
+                            )
+                        );
+                        break;
+                }
+            }
+
+            private function create_lm_renewal_order($subscription, $payment_id)
+            {
+                if (!class_exists('LicenseMonks_Subscription_Renewal')) {
+                    $subscription->add_order_note(
+                        __('License renewal failed: LicenseMonks_Subscription_Renewal class not available', 'dodo-payments-for-woocommerce')
+                    );
+                    $this->log_debug('LM renewal failed: class not available');
+                    return;
+                }
+
+                if (!class_exists('LicenseMonks_Subscription_Lifecycle')) {
+                    $subscription->add_order_note(
+                        __('License renewal failed: LicenseMonks_Subscription_Lifecycle class not available', 'dodo-payments-for-woocommerce')
+                    );
+                    $this->log_debug('LM renewal failed: lifecycle class not available');
+                    return;
+                }
+
+                $renewal_order = LicenseMonks_Subscription_Renewal::process_renewal($subscription);
+
+                if (is_wp_error($renewal_order)) {
+                    $subscription->add_order_note(
+                        sprintf(
+                            // translators: %s: Error message
+                            __('License renewal failed: %s', 'dodo-payments-for-woocommerce'),
+                            $renewal_order->get_error_message()
+                        )
+                    );
+                    $this->log_debug('LM renewal failed: ' . $renewal_order->get_error_message());
+                    return;
+                }
+
+                if (!$renewal_order) {
+                    $subscription->add_order_note(
+                        __('License renewal failed: process_renewal returned empty', 'dodo-payments-for-woocommerce')
+                    );
+                    $this->log_debug('LM renewal failed: no order returned from process_renewal');
+                    return;
+                }
+
+                $renewal_order->payment_complete($payment_id);
+                $renewal_order->update_status('completed');
+
+                LicenseMonks_Subscription_Lifecycle::advance_period($subscription, $renewal_order);
+
+                $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
             }
 
             /**
