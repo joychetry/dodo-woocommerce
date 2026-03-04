@@ -1964,10 +1964,12 @@ function dodo_payments_init()
             private static function wc_coupon_to_dodo_discount_body($coupon)
             {
                 // Get API instance for currency conversion helper
-                $api = new Dodo_Payments_API(
-                    get_option('dodo_payments_api_key'),
-                    get_option('dodo_payments_testmode') === 'yes'
-                );
+                $api = new Dodo_Payments_API(array(
+                    'testmode' => get_option('dodo_payments_testmode') === 'yes',
+                    'api_key' => get_option('dodo_payments_api_key'),
+                    'global_tax_category' => get_option('dodo_payments_global_tax_category', ''),
+                    'global_tax_inclusive' => get_option('dodo_payments_global_tax_inclusive') === 'yes',
+                ));
 
                 $coupon_amount = $api->price_to_minor_units($coupon->get_amount());
                 /** @var int|null */
