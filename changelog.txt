@@ -20,7 +20,6 @@
 * Technical: Payment ID capture on order received page (capture_payment_id_from_return)
 * Technical: Proper ID mapping for both payments and subscriptions
 * Technical: Enhanced JSON response parsing with error handling
-* Technical: Utility script to clear product mappings (clear-product-mappings.php)
 * Fix: Corrected API endpoint from /checkout-sessions to /checkouts (per official Dodo API)
 * Fix: Webhook processing now works correctly with checkout sessions
 * Fix: Better error handling prevents generic "error processing order" message
