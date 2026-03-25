@@ -733,6 +733,9 @@ class Dodo_Payments_API
             throw new Exception('No subscription product handler available');
         }
 
+        $description = $product->get_short_description() ?: $product->get_description();
+        $truncated_description = mb_substr(wp_strip_all_tags($description), 0, 500);
+
         $price_data = array(
             'currency' => get_woocommerce_currency(),
             'discount' => 0,
