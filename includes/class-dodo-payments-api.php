@@ -1010,6 +1010,79 @@ class Dodo_Payments_API
     }
 
     /**
+     * Retrieves the payments list for a Dodo subscription.
+     *
+     * Used to detect trial status when the fast metadata flag is not yet set:
+     * if exactly one payment exists with total_amount === 0, the subscription is still
+     * in its trial period (per Dodo Payments docs trial detection workaround).
+     *
+     * @param string $dodo_subscription_id The Dodo Payments subscription ID.
+     * @return array{
+     *     items: array<array{
+     *         payment_id: string,
+     *         total_amount: int,
+     *         currency: string,
+     *         status: string,
+     *         created_at: string
+     *     }>,
+     *     has_more: bool
+     * }|false Array of payments or false on error.
+     * @since 0.7.0
+     */
+    public function get_subscription_payments($dodo_subscription_id)
+    {
+        $res = $this->get("/subscriptions/{$dodo_subscription_id}/payments");
+
+        if (is_wp_error($res)) {
+            return false;
+        }
+
+        $code = wp_remote_retrieve_response_code($res);
+        if ($code !== 200) {
+            return false;
+        }
+
+        return json_decode($res['body'], true);
+    }
+
+    /**
+     * Extends a subscription's trial period by setting a new next_billing_date.
+     *
+     * Dodo Payments docs: next_billing_date must be a future UTC ISO8601 date string.
+     * This is used for customer-support trial extensions (e.g., extend by 7 days).
+     * Dodo will re-schedule the auto-charge for the new date.
+     *
+     * @param string $dodo_subscription_id The Dodo Payments subscription ID.
+     * @param string $new_billing_date    Future UTC ISO8601 date string (e.g., '2025-03-15T00:00:00Z').
+     * @throws \Exception If the API request fails or the date is not in the future.
+     * @since 0.7.0
+     */
+    public function extend_trial_period($dodo_subscription_id, $new_billing_date)
+    {
+        $proposed = strtotime($new_billing_date);
+        if (!$proposed || $proposed <= time()) {
+            throw new Exception(
+                'Trial extension failed: next_billing_date must be a future UTC ISO8601 date. Received: ' . $new_billing_date
+            );
+        }
+
+        $body = array(
+            'next_billing_date' => $new_billing_date,
+        );
+
+        $res = $this->patch("/subscriptions/{$dodo_subscription_id}", $body);
+
+        if (is_wp_error($res)) {
+            throw new Exception("Failed to extend trial period: " . esc_html($res->get_error_message()));
+        }
+
+        $code = wp_remote_retrieve_response_code($res);
+        if ($code !== 200) {
+            throw new Exception("Failed to extend trial period (HTTP $code): " . esc_html($res['body']));
+        }
+    }
+
+    /**
      * Cancels a subscription immediately in the Dodo Payments API.
      *
      * Sets the subscription status to 'cancelled' via the API. Throws an exception if the operation fails.

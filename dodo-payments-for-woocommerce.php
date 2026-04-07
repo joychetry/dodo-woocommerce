@@ -150,7 +150,9 @@ function dodo_payments_init()
                 // AJAX handler to clear checkout session URL
                 add_action('wp_ajax_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
                 add_action('wp_ajax_nopriv_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
-                
+
+                // AJAX: extend trial period for a subscription (admin only)
+                add_action('wp_ajax_dodo_extend_trial_period', array($this, 'ajax_extend_trial_period'));
                 // Clear session after payment completion
                 add_action('woocommerce_thankyou_' . $this->id, array($this, 'clear_checkout_session_after_payment'), 5);
 
@@ -977,12 +979,53 @@ function dodo_payments_init()
             public function ajax_clear_checkout_session()
             {
                 check_ajax_referer('dodo_checkout_overlay', 'nonce');
-                
+
                 if (WC()->session) {
                     WC()->session->__unset('dodo_checkout_session_url');
                 }
-                
+
                 wp_send_json_success();
+            }
+
+            /**
+             * AJAX handler: extend trial period for a subscription.
+             *
+             * Expects POST parameters:
+             *   - subscription_id (int) — WooCommerce subscription ID
+             *   - days           (int) — Number of days to extend
+             *   - nonce          (string) — WooCommerce admin nonce
+             *
+             * @return void
+             * @since 0.7.0
+             */
+            public function ajax_extend_trial_period()
+            {
+                check_ajax_referer('dodo_admin_subscription', 'nonce');
+
+                if (!current_user_can('manage_woocommerce')) {
+                    wp_send_json_error(array('message' => __('Insufficient permissions.', 'dodo-payments-for-woocommerce')));
+                    return;
+                }
+
+                $subscription_id = isset($_POST['subscription_id']) ? absint($_POST['subscription_id']) : 0;
+                $days = isset($_POST['days']) ? absint($_POST['days']) : 0;
+
+                if (!$subscription_id || !$days) {
+                    wp_send_json_error(array('message' => __('Invalid parameters.', 'dodo-payments-for-woocommerce')));
+                    return;
+                }
+
+                $result = $this->extend_trial_period_admin($subscription_id, $days);
+
+                if (is_wp_error($result)) {
+                    wp_send_json_error(array('message' => $result->get_error_message()));
+                    return;
+                }
+
+                wp_send_json_success(array('message' => sprintf(
+                    __('Trial extended by %d days.', 'dodo-payments-for-woocommerce'),
+                    $days
+                )));
             }
 
             /**
@@ -1301,19 +1344,20 @@ function dodo_payments_init()
                         __('Dodo Payments %1$s API Key is not configured. Please configure it in WooCommerce > Settings > Payments > Dodo Payments.', 'dodo-payments-for-woocommerce'),
                         $mode
                     );
-                    
+
                     $order->add_order_note($error_msg);
                     wc_add_notice($error_msg, 'error');
-                    
+
                     return array('result' => 'failure');
                 }
-                
+
                 // Check if order contains subscription products
                 $contains_subscription = $this->order_contains_subscription($order);
 
                 // Detect License Monks upgrade orders
                 $upgrade_meta = null;
                 foreach ($order->get_items() as $item) {
+                    $product = $item->get_product();
                     $meta = $item->get_meta('licensemonks_upgrade', true);
                     if (!empty($meta) && !empty($meta['license_id'])) {
                         $upgrade_meta = $meta;
@@ -1367,17 +1411,15 @@ function dodo_payments_init()
                     // Use checkout sessions API when tax ID collection is enabled OR overlay checkout is enabled
                     // This provides a modern checkout experience with additional features
                     if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
-                        // Let Dodo Payments automatically handle payment method filtering based on location and currency
                         $response = $this->dodo_payments_api->create_checkout_session(
                             $order,
                             $synced_products,
                             $dodo_discount_code,
                             $this->get_return_url($order),
-                            $this->enable_tax_id_collection, // enable tax ID collection
-                            null // Let Dodo handle payment method filtering automatically
+                            $this->enable_tax_id_collection,
+                            null
                         );
                     } else {
-                        // Use legacy payment/subscription API for backward compatibility
                         $response = $contains_subscription
                             ? $this->dodo_payments_api->create_subscription(
                                 $order,
@@ -1394,7 +1436,7 @@ function dodo_payments_init()
                     }
                 } catch (Exception $e) {
                     $error_message = $e->getMessage();
-                    
+
                     $order->add_order_note(
                         sprintf(
                             // translators: %1$s: Error message
@@ -1402,7 +1444,7 @@ function dodo_payments_init()
                             $error_message
                         )
                     );
-                    
+
                     // Log the error for debugging
                     $this->log_debug('Error for Order #' . $order->get_id() . ': ' . $error_message);
 
@@ -1425,7 +1467,7 @@ function dodo_payments_init()
                     if (isset($response['checkout_url']) && isset($response['session_id'])) {
                         // Store the session ID for future reference
                         $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
-                        
+
                         // If overlay checkout is enabled, store checkout URL and redirect to checkout page
                         if ($this->enable_overlay_checkout) {
                             $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
@@ -1474,6 +1516,7 @@ function dodo_payments_init()
                     }
                 } else {
                     // Handle legacy payment and subscription responses
+
                     if ($contains_subscription) {
                         if (isset($response['payment_link'])) {
                             if (isset($response['subscription_id'])) {
@@ -1522,7 +1565,6 @@ function dodo_payments_init()
                                     )
                                 );
                             }
-
 
                             return array(
                                 'result' => 'success',
@@ -2186,6 +2228,66 @@ function dodo_payments_init()
             }
 
             /**
+             * Extends the trial period for a License Monks or WooCommerce Subscription
+             * by a given number of days via the Dodo Payments API.
+             *
+             * Used by the admin AJAX handler to grant trial extensions for customer support.
+             *
+             * @param int $wc_subscription_id The WooCommerce subscription/order ID.
+             * @param int $days              Number of days to extend the trial by.
+             * @return \WP_Error|true WP_Error on failure, true on success.
+             * @since 0.7.0
+             */
+            public function extend_trial_period_admin($wc_subscription_id, $days)
+            {
+                $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($wc_subscription_id);
+
+                if (!$dodo_subscription_id) {
+                    return new WP_Error(
+                        'missing_dodo_mapping',
+                        __('No Dodo Payments subscription ID found for this subscription.', 'dodo-payments-for-woocommerce')
+                    );
+                }
+
+                $dodo_sub = $this->dodo_payments_api->get_subscription($dodo_subscription_id);
+                if (!$dodo_sub) {
+                    return new WP_Error(
+                        'dodo_fetch_failed',
+                        __('Could not fetch subscription from Dodo Payments.', 'dodo-payments-for-woocommerce')
+                    );
+                }
+
+                $current_end = $dodo_sub['next_billing_date'] ?? null;
+                if (!$current_end) {
+                    return new WP_Error(
+                        'no_billing_date',
+                        __('No next_billing_date found on Dodo subscription. Ensure the subscription has a trial period.', 'dodo-payments-for-woocommerce')
+                    );
+                }
+
+                // Add $days to the current trial end date (both as UTC timestamps)
+                $new_end = gmdate('Y-m-d\TH:i:s\Z', (int) strtotime($current_end) + ($days * DAY_IN_SECONDS));
+
+                try {
+                    $this->dodo_payments_api->extend_trial_period($dodo_subscription_id, $new_end);
+                } catch (Exception $e) {
+                    return new WP_Error('dodo_api_error', $e->getMessage());
+                }
+
+                $subscription = wc_get_order($wc_subscription_id);
+                if ($subscription) {
+                    $subscription->add_order_note(sprintf(
+                        /* translators: %1$d: Number of days, %2$s: New trial end date */
+                        __('Dodo Payments: Trial period extended by %1$d days. New trial end date: %2$s', 'dodo-payments-for-woocommerce'),
+                        $days,
+                        wp_date(get_option('date_format') . ' ' . get_option('time_format'), (int) strtotime($new_end))
+                    ));
+                }
+
+                return true;
+            }
+
+            /**
              * Handles webhook notifications from Dodo Payments
              * 
              * This method processes webhooks from both:
@@ -2354,6 +2456,46 @@ function dodo_payments_init()
 
                 switch ($status) {
                     case 'succeeded':
+                        // ─── Trial payment guard ─────────────────────────────────────────────
+                        // Detect zero-amount "mandate authorization" payments that occur at
+                        // subscription creation when a trial_period_days > 0 is configured.
+                        // These $0 authorizations MUST NOT call payment_complete().
+                        $payment_amount = isset($payload['data']['total_amount'])
+                            ? (int) $payload['data']['total_amount']
+                            : 0;
+
+                        if ($payment_amount === 0 && isset($payload['data']['subscription_id'])) {
+                            $sub_id = $payload['data']['subscription_id'];
+                            $wc_sub_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($sub_id);
+
+                            if ($wc_sub_id) {
+                                $subscription = null;
+                                if (class_exists('LicenseMonks_Subscription')) {
+                                    $lm_sub = wc_get_order($wc_sub_id);
+                                    if ($lm_sub && $lm_sub->get_type() === 'lm_subscription') {
+                                        $subscription = $lm_sub;
+                                    }
+                                }
+                                if (!$subscription && class_exists('WC_Subscriptions') && function_exists('wcs_get_subscription')) {
+                                    $subscription = wcs_get_subscription($wc_sub_id);
+                                }
+
+                                if ($subscription) {
+                                    $subscription->update_meta_data('_dodo_trial_active', 'yes');
+                                    $subscription->update_meta_data('_dodo_trial_initial_payment_id', $payment_id);
+                                    $subscription->save();
+                                    $subscription->add_order_note(sprintf(
+                                        /* translators: %s: Payment ID */
+                                        __('Dodo Payments: Free trial mandate authorized. Payment ID: %s (zero-amount, not charged yet). Trial is active.', 'dodo-payments-for-woocommerce'),
+                                        $payment_id
+                                    ));
+                                }
+                            }
+
+                            break; // EXIT — do NOT call payment_complete() or create a renewal order
+                        }
+                        // ─── End trial guard ────────────────────────────────────────────────
+
                         $order->payment_complete($payment_id);
                         $order->update_status('completed', __('Payment completed by Dodo Payments', 'dodo-payments-for-woocommerce'));
 
@@ -2362,19 +2504,38 @@ function dodo_payments_init()
                             $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
                             $subscription = false;
-                            
+
                             if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscription')) {
                                 $subscription_order = wcs_get_subscription($wc_subscription_id);
                                 if ($subscription_order) {
                                     $subscription = $subscription_order;
                                 }
                             }
-                            
+
                             if (!$subscription) {
                                 $lm_subscription = wc_get_order($wc_subscription_id);
                                 if ($lm_subscription && $lm_subscription->get_type() === 'lm_subscription') {
                                     $subscription = $lm_subscription;
                                 }
+                            }
+
+                            if ($subscription) {
+                                // ─── Post-trial first charge: clear trial flag ─────────────
+                                $was_in_trial = $subscription->get_meta('_dodo_trial_active') === 'yes';
+
+                                if ($was_in_trial) {
+                                    $subscription->update_meta_data('_dodo_trial_active', 'no');
+                                    $subscription->update_meta_data('_dodo_trial_first_charge', $payment_id);
+                                    $subscription->update_meta_data('_dodo_trial_first_charge_date', current_time('mysql'));
+                                    $subscription->save();
+                                    $subscription->add_order_note(sprintf(
+                                        /* translators: %1$s: Payment ID, %2$s: Order total */
+                                        __('Dodo Payments: Trial ended — first post-trial charge successful. Payment ID: %1$s, Amount: %2$s. Subscription is now in paid period.', 'dodo-payments-for-woocommerce'),
+                                        $payment_id,
+                                        wc_price($order->get_total())
+                                    ));
+                                }
+                                // ─── End trial flag clearing ───────────────────────────────
                             }
 
                             if (!$subscription) {
@@ -2548,6 +2709,14 @@ function dodo_payments_init()
                         $subscription->update_status('expired', __('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
                         break;
 
+                    case 'trial_ended':
+                        $subscription->add_order_note(sprintf(
+                            /* translators: %1$s: Subscription ID */
+                            __('Dodo Payments: Trial period ended. Subscription ID: %1$s. Auto-charge will occur shortly.', 'dodo-payments-for-woocommerce'),
+                            $subscription_id
+                        ));
+                        break;
+
                     case 'plan_changed':
                         $this->handle_plan_changed_webhook($payload, $subscription);
                         break;
@@ -2711,6 +2880,15 @@ function dodo_payments_init()
                     case 'expired':
                         LicenseMonks_Subscription_Lifecycle::expire($subscription);
                         $subscription->add_order_note(__('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
+                        break;
+                    case 'trial_ended':
+                        $subscription->add_order_note(sprintf(
+                            /* translators: %1$s: Subscription ID */
+                            __('Dodo Payments: Trial period ended for subscription %1$s. Dodo will now auto-charge the stored mandate.', 'dodo-payments-for-woocommerce'),
+                            $subscription_id
+                        ));
+                        // Do NOT transition LM status here — let payment.succeeded (first post-trial charge)
+                        // drive the active transition so license activation hooks fire at the right time.
                         break;
                     default:
                         $subscription->add_order_note(
