@@ -1,43 +1,9 @@
 *** Dodo Payments for WooCommerce Changelog ***
 
-2025-11-06 - version 0.4.0
-* Feature: Add Tax ID / VAT number collection support via Checkout Sessions API
-* Feature: New Checkout Sessions API integration for modern checkout experience
-* Feature: Configurable tax ID collection setting in gateway configuration
-* Feature: Automatic phone number collection when using checkout sessions
-* Feature: Automatic payment ID capture from return URL for webhook processing
-* Enhancement: Backward compatible implementation - legacy API still available
-* Enhancement: Comprehensive documentation for Tax ID feature
-* Enhancement: Smart phone number handling - only include if provided
-* Enhancement: Optimized feature flags following Dodo best practices
-* Enhancement: Better error messages - now shows specific API errors to users
-* Enhancement: API key validation - checks if key is configured before processing
-* Enhancement: Improved error logging for debugging
-* Enhancement: Auto-clear stale product mappings when products not found (404)
-* Enhancement: Webhook fallback - find orders by session_id if payment_id mapping missing
-* Technical: New create_checkout_session() method in API class
-* Technical: Session ID tracking for checkout sessions
-* Technical: Payment ID capture on order received page (capture_payment_id_from_return)
-* Technical: Proper ID mapping for both payments and subscriptions
-* Technical: Enhanced JSON response parsing with error handling
-* Fix: Corrected API endpoint from /checkout-sessions to /checkouts (per official Dodo API)
-* Fix: Webhook processing now works correctly with checkout sessions
-* Fix: Better error handling prevents generic "error processing order" message
-* Fix: Stale product mappings automatically cleared and re-synced
-* Fix: Webhook race condition - now finds orders even if payment_id not yet captured
-
-2025-07-09 - version 0.3.1
-* Fix: use plain permalink structure for webhook url which is more widely supported
-
-2025-06-18 - version 0.3.0
-* Feature: Add comprehensive subscription support
-* Feature: Subscription product management and synchronization
-* Feature: Subscription lifecycle management (cancel, suspend, reactivate)
-* Feature: Webhook handling for subscription events and renewals
-* Feature: Database mapping for WooCommerce and Dodo subscription IDs
-* Feature: API integration for subscription operations
-* Enhancement: Improved product synchronization for subscription vs regular products
-* Enhancement: Enhanced webhook processing with dedicated handlers
-
-2025-05-19 - version 0.2.0
-* Feature: Add support for coupon codes(Fixed percentage type only).
+2026-04-08 - version 0.6.0
+* Feature: Add "Buy as Company" functionality - Allow customers to purchase as business and provide company name for invoices
+* Feature: Add company name field to checkout with toggle switch UI
+* Feature: Add support for License Monks subscriptions
+* Enhancement: Add informational text about tax ID collection for B2B transactions
+* Enhancement: Add nonce verification for custom checkout fields security
+* Enhancement: Improved subscription handling with License Monks integration (suspend, cancel, reactivate)

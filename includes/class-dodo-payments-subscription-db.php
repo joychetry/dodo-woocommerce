@@ -2,6 +2,7 @@
 
 /**
  * Database operations for Dodo Payments Subscription mappings
+ * Handles mappings for both WooCommerce Subscriptions and License Monks Subscriptions
  *
  * @since 0.3.0
  */

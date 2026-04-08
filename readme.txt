@@ -3,7 +3,7 @@ Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
 Requires at least: 6.1
 Tested up to: 6.9
-Stable tag: 0.5
+Stable tag: 0.6
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,13 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 0.6 =
+* Feature: Add "Buy as Company" functionality - Allow customers to purchase as business and provide company name for invoices
+* Feature: Add company name field to checkout with toggle switch
+* Feature: Add support for License Monks subscriptions
+* Enhancement: Add informational text about tax ID collection for B2B transactions
+* Enhancement: Add nonce verification for custom checkout fields security
 
 = 0.4 =
 * Feature: Add "Purchase as Business" functionality - B2B customers can provide company name for invoices
