@@ -272,8 +272,8 @@ class Dodo_Payments_API
             'name' => $customer_name,
         );
 
-        // Add phone number only if provided (following Dodo best practices)
-        $phone = $order->get_billing_phone();
+        // Only send phone numbers that can be expressed in Dodo's required international format.
+        $phone = $this->get_checkout_phone_number($order);
         if (!empty($phone)) {
             $customer['phone_number'] = $phone;
         }
@@ -367,6 +367,72 @@ class Dodo_Payments_API
         }
         
         return $decoded;
+    }
+
+    /**
+     * Formats the WooCommerce billing phone number for Dodo checkout sessions.
+     *
+     * Dodo expects an international-format phone number including country code.
+     * WooCommerce only stores a loosely validated phone string, so we normalize it
+     * when possible and omit it when we cannot produce a safe value.
+     *
+     * @param WC_Order $order WooCommerce order.
+     * @return string
+     */
+    private function get_checkout_phone_number($order)
+    {
+        $phone = wc_sanitize_phone_number($order->get_billing_phone());
+        if (empty($phone)) {
+            return '';
+        }
+
+        if (strpos($phone, '00') === 0) {
+            $phone = '+' . substr($phone, 2);
+        }
+
+        if ($this->is_valid_checkout_phone_number($phone)) {
+            return $phone;
+        }
+
+        $country = $order->get_billing_country();
+        if (empty($country) || !function_exists('WC') || !WC()->countries) {
+            return '';
+        }
+
+        $calling_code = WC()->countries->get_country_calling_code($country);
+        if (is_array($calling_code)) {
+            $calling_code = reset($calling_code);
+        }
+
+        $calling_code = preg_replace('/\D+/', '', (string) $calling_code);
+        $phone_digits = preg_replace('/\D+/', '', $phone);
+
+        if (empty($calling_code) || empty($phone_digits)) {
+            return '';
+        }
+
+        if (strpos($phone_digits, $calling_code) !== 0) {
+            if (strpos($phone_digits, '0') === 0) {
+                return '';
+            }
+
+            $phone_digits = $calling_code . $phone_digits;
+        }
+
+        $phone = '+' . $phone_digits;
+
+        return $this->is_valid_checkout_phone_number($phone) ? $phone : '';
+    }
+
+    /**
+     * Validates a phone number against Dodo's international format requirement.
+     *
+     * @param string $phone Phone number candidate.
+     * @return bool
+     */
+    private function is_valid_checkout_phone_number($phone)
+    {
+        return is_string($phone) && preg_match('/^\+[1-9]\d{6,14}$/', $phone) === 1;
     }
 
     /**
