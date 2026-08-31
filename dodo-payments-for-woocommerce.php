@@ -156,17 +156,15 @@ function dodo_payments_init()
                 // Clear session after payment completion
                 add_action('woocommerce_thankyou_' . $this->id, array($this, 'clear_checkout_session_after_payment'), 5);
 
-                // Add "Buy as Company" checkbox and company name field to checkout
-                add_action('woocommerce_after_checkout_billing_form', array($this, 'add_buy_as_company_fields'));
-                
-                // Validate checkout fields
-                add_action('woocommerce_checkout_process', array($this, 'validate_buy_as_company_fields'));
-                
-                // Save checkout fields to order meta
-                add_action('woocommerce_checkout_update_order_meta', array($this, 'save_buy_as_company_fields'));
-                
-                // Enqueue checkout scripts for company fields
-                add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_company_fields_script'));
+                // "Purchasing as a business" fields on the WooCommerce checkout.
+                // Only registered when Tax ID Collection is enabled — otherwise the
+                // toggle/Tax ID inputs would show even though the setting is off.
+                if ($this->enable_tax_id_collection) {
+                    add_action('woocommerce_after_checkout_billing_form', array($this, 'add_buy_as_company_fields'));
+                    add_action('woocommerce_checkout_process', array($this, 'validate_buy_as_company_fields'));
+                    add_action('woocommerce_checkout_update_order_meta', array($this, 'save_buy_as_company_fields'));
+                    add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_company_fields_script'));
+                }
 
                 // Subscription-related actions
                 if (class_exists('WC_Subscriptions')) {
