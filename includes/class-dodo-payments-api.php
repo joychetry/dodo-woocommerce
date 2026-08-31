@@ -57,10 +57,12 @@ class Dodo_Payments_API
      * @return int The price in minor units (e.g., 1050 for USD $10.50).
      */
     /**
-     * Converts a price amount to minor units based on the currency's decimal places.
+     * Converts a price amount to minor units based on the currency's real decimal places.
      *
-     * Handles zero-decimal currencies (JPY, KRW), two-decimal currencies (USD, EUR),
-     * and three-decimal currencies (BHD, KWD, etc.) correctly.
+     * Uses the ISO 4217 minor-unit exponent for the currency (0 for JPY/KRW, 2 for USD/EUR,
+     * 3 for BHD/KWD), NOT WooCommerce's display setting `wc_get_price_decimals()` — that
+     * setting only controls how prices are shown and can be 0 even for USD, which would
+     * corrupt every amount sent to Dodo ($299 -> 299 minor units -> $2.99).
      *
      * @param float $price The price amount in major units (e.g., 10.50 for USD).
      * @param string $currency Optional. The currency code. Defaults to current WooCommerce currency.
@@ -72,18 +74,20 @@ class Dodo_Payments_API
             $currency = get_woocommerce_currency();
         }
 
-        // Get the number of decimal places for this currency
-        if (function_exists('wc_get_price_decimals')) {
-            $decimals = wc_get_price_decimals();
-        } else {
-            // Fallback: default to 2 decimals for most currencies
-            $decimals = 2;
-        }
+        $currency = strtoupper($currency);
 
-        // Some zero-decimal currencies that WooCommerce might not detect correctly
-        $zero_decimal_currencies = array('JPY', 'KRW', 'HUF', 'TWD');
-        if (in_array(strtoupper($currency), $zero_decimal_currencies, true)) {
+        // ISO 4217 minor-unit exponent per currency (real money precision), independent of
+        // WooCommerce's display decimals setting. WooCommerce's own list: 0 for JPY/KRW/HUF/TWD,
+        // 3 for BHD/CLP/... KWD etc., 2 for everything else.
+        $zero_decimal_currencies = array('JPY', 'KRW', 'HUF', 'TWD', 'CLP', 'ISK', 'KMF', 'PYG', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF');
+        $three_decimal_currencies = array('BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND');
+
+        if (in_array($currency, $zero_decimal_currencies, true)) {
             $decimals = 0;
+        } elseif (in_array($currency, $three_decimal_currencies, true)) {
+            $decimals = 3;
+        } else {
+            $decimals = 2;
         }
 
         $multiplier = pow(10, $decimals);
@@ -284,6 +288,11 @@ class Dodo_Payments_API
                 'country'  => $order->get_billing_country(),
                 'zipcode'  => $order->get_billing_postcode(),
             )),
+            // Lock the session to the store's currency. Without billing_currency, Dodo's
+            // adaptive currency silently converts the price to the customer's local currency
+            // based on their IP/billing country (docs warn: always pass billing_currency and
+            // billing_address.country together). We charge in the WooCommerce store currency.
+            'billing_currency' => get_woocommerce_currency(),
             'return_url' => $return_url,
         );
 
@@ -305,6 +314,11 @@ class Dodo_Payments_API
         // Configure feature flags following Dodo best practices
         $feature_flags = array(
             'allow_phone_number_collection' => true, // Always collect phone for better customer data
+            // Lock the session to the store currency (billing_currency above). Dodo's
+            // allow_currency_selection DEFAULTS to true (customer can switch currency on
+            // the checkout page), so it must be explicitly disabled — omitting it does not
+            // disable switching.
+            'allow_currency_selection' => false,
         );
 
         // Hide the promo-code field on Dodo's checkout (coupons are applied in WooCommerce),
@@ -481,6 +495,9 @@ class Dodo_Payments_API
                 'email' => $order->get_billing_email(),
                 'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
             ),
+            // Lock to the store currency so Dodo's adaptive currency does not silently
+            // convert the price to the customer's local currency.
+            'billing_currency' => get_woocommerce_currency(),
             'product_cart' => $synced_products,
             'discount_code' => $dodo_discount_code,
             'payment_link' => true,
@@ -1036,6 +1053,9 @@ class Dodo_Payments_API
                 'email' => $order->get_billing_email(),
                 'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
             ),
+            // Lock to the store currency so Dodo's adaptive currency does not silently
+            // convert the price to the customer's local currency.
+            'billing_currency' => get_woocommerce_currency(),
             'product_id' => $first_product['product_id'],
             'quantity' => $first_product['quantity'],
         );
