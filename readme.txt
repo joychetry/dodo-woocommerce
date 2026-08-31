@@ -43,7 +43,6 @@ Currently, we support credit card payments through Dodo Payment Gateway.
 = 0.6 =
 * Feature: Add "Buy as Company" functionality - Allow customers to purchase as business and provide company name for invoices
 * Feature: Add company name field to checkout with toggle switch
-* Feature: Add support for License Monks subscriptions
 * Enhancement: Add informational text about tax ID collection for B2B transactions
 * Enhancement: Add nonce verification for custom checkout fields security
 

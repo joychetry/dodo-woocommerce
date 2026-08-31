@@ -2496,7 +2496,6 @@ function dodo_payments_init()
                         }
                         // ─── End trial guard ────────────────────────────────────────────────
 
-                        $was_initial_order_unpaid = !$order->is_paid();
                         $order->payment_complete($payment_id);
                         $order->update_status('completed', __('Payment completed by Dodo Payments', 'dodo-payments-for-woocommerce'));
 
@@ -2547,17 +2546,6 @@ function dodo_payments_init()
                                     . $subscription_id
                                 );
                                 return;
-                            }
-
-                            if ($was_initial_order_unpaid && method_exists($subscription, 'get_parent_id') && absint($subscription->get_parent_id()) === $order->get_id()) {
-                                $subscription->add_order_note(
-                                    sprintf(
-                                        // translators: %1$s: Payment ID
-                                        __('Initial subscription payment confirmed by Dodo Payments. Payment ID: %1$s', 'dodo-payments-for-woocommerce'),
-                                        $payment_id
-                                    )
-                                );
-                                break;
                             }
 
                             $dodo_subscription = $this->dodo_payments_api->get_subscription($subscription_id);
@@ -2648,161 +2636,6 @@ function dodo_payments_init()
             }
 
             /**
-             * Resolve a WooCommerce order from webhook data.
-             *
-             * Checkout Session subscription webhooks can arrive before the return URL
-             * captures a subscription_id, so prefer metadata/session lookups over the
-             * subscription mapping table when it is not populated yet.
-             *
-             * @param array $payload Webhook payload from Dodo Payments.
-             * @return WC_Order|false
-             */
-            private function get_order_from_webhook_payload($payload)
-            {
-                if (isset($payload['data']['metadata']['wc_order_id'])) {
-                    $order_id = absint($payload['data']['metadata']['wc_order_id']);
-                    $order = $order_id ? wc_get_order($order_id) : false;
-
-                    if ($order && $order->get_payment_method() === $this->id) {
-                        return $order;
-                    }
-                }
-
-                if (isset($payload['data']['payment_id'])) {
-                    $order_id = Dodo_Payments_Payment_DB::get_order_id($payload['data']['payment_id']);
-                    $order = $order_id ? wc_get_order($order_id) : false;
-
-                    if ($order && $order->get_payment_method() === $this->id) {
-                        return $order;
-                    }
-                }
-
-                if (isset($payload['data']['checkout_session_id'])) {
-                    $orders = wc_get_orders(array(
-                        'limit'      => 1,
-                        'meta_key'   => '_dodo_checkout_session_id',
-                        'meta_value' => sanitize_text_field($payload['data']['checkout_session_id']),
-                    ));
-
-                    if (!empty($orders)) {
-                        $order = reset($orders);
-                        if ($order && $order->get_payment_method() === $this->id) {
-                            return $order;
-                        }
-                    }
-                }
-
-                return false;
-            }
-
-            /**
-             * Get the WooCommerce/License Monks subscription created for an order.
-             *
-             * @param int $order_id Parent order ID.
-             * @return WC_Order|WC_Subscription|false
-             */
-            private function get_subscription_for_order($order_id)
-            {
-                if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
-                    $subscriptions = wcs_get_subscriptions_for_order($order_id);
-
-                    if (!empty($subscriptions)) {
-                        return reset($subscriptions);
-                    }
-                }
-
-                $lm_subscriptions = wc_get_orders(array(
-                    'type'   => 'lm_subscription',
-                    'parent' => $order_id,
-                    'limit'  => 1,
-                ));
-
-                if (!empty($lm_subscriptions)) {
-                    return reset($lm_subscriptions);
-                }
-
-                return false;
-            }
-
-            /**
-             * Save missing payment/subscription mappings from a subscription webhook.
-             *
-             * @param array $payload Webhook payload from Dodo Payments.
-             * @return int|null WooCommerce subscription ID.
-             */
-            private function recover_subscription_mapping_from_webhook($payload)
-            {
-                if (empty($payload['data']['subscription_id'])) {
-                    return null;
-                }
-
-                $order = $this->get_order_from_webhook_payload($payload);
-                if (!$order) {
-                    return null;
-                }
-
-                $subscription = $this->get_subscription_for_order($order->get_id());
-                if (!$subscription) {
-                    return null;
-                }
-
-                $dodo_subscription_id = sanitize_text_field($payload['data']['subscription_id']);
-                Dodo_Payments_Subscription_DB::save_mapping($subscription->get_id(), $dodo_subscription_id);
-
-                if (!empty($payload['data']['payment_id'])) {
-                    $payment_id = sanitize_text_field($payload['data']['payment_id']);
-                    if (!Dodo_Payments_Payment_DB::get_order_id($payment_id)) {
-                        Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $payment_id);
-                    }
-                }
-
-                $order->add_order_note(
-                    sprintf(
-                        // translators: %1$s: Subscription ID
-                        __('Dodo Payments subscription mapping recovered from webhook: %1$s', 'dodo-payments-for-woocommerce'),
-                        $dodo_subscription_id
-                    )
-                );
-
-                return $subscription->get_id();
-            }
-
-            /**
-             * Complete the original checkout order when Dodo confirms subscription activation.
-             *
-             * @param WC_Order|WC_Subscription $subscription WooCommerce subscription object.
-             * @param array $payload Webhook payload from Dodo Payments.
-             * @return void
-             */
-            private function complete_initial_order_from_subscription_webhook($subscription, $payload)
-            {
-                if (!method_exists($subscription, 'get_parent_id')) {
-                    return;
-                }
-
-                $order_id = absint($subscription->get_parent_id());
-                $order = $order_id ? wc_get_order($order_id) : false;
-
-                if (!$order || $order->get_payment_method() !== $this->id || $order->is_paid()) {
-                    return;
-                }
-
-                $payment_id = !empty($payload['data']['payment_id']) ? sanitize_text_field($payload['data']['payment_id']) : '';
-
-                if ($payment_id) {
-                    Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $payment_id);
-                    $order->payment_complete($payment_id);
-                } else {
-                    $order->payment_complete();
-                }
-
-                $order->update_status(
-                    'completed',
-                    __('Initial subscription payment confirmed by Dodo Payments subscription webhook', 'dodo-payments-for-woocommerce')
-                );
-            }
-
-            /**
              * Handle subscription webhook events
              *
              * @param array $payload
@@ -2816,12 +2649,8 @@ function dodo_payments_init()
                 $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
                 if (!$wc_subscription_id) {
-                    $wc_subscription_id = $this->recover_subscription_mapping_from_webhook($payload);
-
-                    if (!$wc_subscription_id) {
-                        $this->log_debug('Could not find WooCommerce subscription for subscription ID ' . $subscription_id);
-                        return;
-                    }
+                    $this->log_debug('Could not find WooCommerce subscription for subscription ID ' . $subscription_id);
+                    return;
                 }
 
                 $subscription = wc_get_order($wc_subscription_id);
@@ -2853,7 +2682,6 @@ function dodo_payments_init()
                                 $subscription_id
                             )
                         );
-                        $this->complete_initial_order_from_subscription_webhook($subscription, $payload);
                         break;
 
                     case 'renewed':
@@ -3030,7 +2858,6 @@ function dodo_payments_init()
                     case 'active':
                         LicenseMonks_Subscription_Lifecycle::transition($subscription, 'active');
                         $subscription->add_order_note(__('Subscription marked active in Dodo Payments', 'dodo-payments-for-woocommerce'));
-                        $this->complete_initial_order_from_subscription_webhook($subscription, $payload);
                         break;
                     case 'renewed':
                         // Handled in payment.succeeded webhook instead
@@ -3055,7 +2882,6 @@ function dodo_payments_init()
                         $subscription->add_order_note(__('Subscription expired in Dodo Payments', 'dodo-payments-for-woocommerce'));
                         break;
                     case 'trial_ended':
-                        $subscription_id = $payload['data']['subscription_id'] ?? '';
                         $subscription->add_order_note(sprintf(
                             /* translators: %1$s: Subscription ID */
                             __('Dodo Payments: Trial period ended for subscription %1$s. Dodo will now auto-charge the stored mandate.', 'dodo-payments-for-woocommerce'),
