@@ -306,6 +306,13 @@ class Dodo_Payments_API
         $feature_flags = array(
             'allow_phone_number_collection' => true, // Always collect phone for better customer data
         );
+
+        // Hide the promo-code field on Dodo's checkout (coupons are applied in WooCommerce),
+        // but keep it enabled when a coupon is pre-applied: Dodo rejects `discount_code`
+        // outright when allow_discount_code is false.
+        if (!$dodo_discount_code) {
+            $feature_flags['allow_discount_code'] = false;
+        }
         
         if ($enable_tax_id_collection) {
             $feature_flags['allow_tax_id'] = true;
