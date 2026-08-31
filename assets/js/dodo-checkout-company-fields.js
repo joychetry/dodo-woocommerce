@@ -34,32 +34,27 @@
 
             var $checkbox = $('#buy_as_company_checkbox');
             var $companyField = $('#custom_company_name_field');
+            var $taxIdField = $('#dodo_tax_id_field');
             var $taxIdInfo = $('.dodo-tax-id-info');
 
             // If elements don't exist, return early
-            if (!$checkbox.length || !$companyField.length) {
+            if (!$checkbox.length || !$companyField.length || !$taxIdField.length) {
                 return;
             }
 
-            // Function to toggle company name field visibility and requirement
+            // Toggle a company field's visibility and requirement.
+            // Values are kept (not cleared) so toggling off/on doesn't lose what was typed or prefilled.
+            function setCompanyField($el, on) {
+                $el.css('display', on ? 'block' : 'none').find('input').prop('required', on);
+                on ? $el.addClass('validate-required') : $el.removeClass('validate-required');
+            }
+
+            // Toggle company fields based on checkbox state (css() on a missing element is a no-op)
             function toggleCompanyField() {
-                if ($checkbox.is(':checked')) {
-                    $companyField.css('display', 'block').find('input').prop('required', true);
-                    // Add required class for styling
-                    $companyField.addClass('validate-required');
-                    // Show tax ID info text
-                    if ($taxIdInfo.length) {
-                        $taxIdInfo.css('display', 'block');
-                    }
-                } else {
-                    $companyField.css('display', 'none').find('input').prop('required', false).val('');
-                    // Remove required class
-                    $companyField.removeClass('validate-required');
-                    // Hide tax ID info text
-                    if ($taxIdInfo.length) {
-                        $taxIdInfo.css('display', 'none');
-                    }
-                }
+                var on = $checkbox.is(':checked');
+                setCompanyField($companyField, on);
+                setCompanyField($taxIdField, on);
+                $taxIdInfo.css('display', on ? 'block' : 'none');
             }
 
             // Remove any existing handlers to prevent duplicates

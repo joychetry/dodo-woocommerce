@@ -253,18 +253,13 @@ class Dodo_Payments_API
             $company_name = $custom_company_name;
         }
         
-        // Get contact person name (billing first and last name)
+        // Get contact person name (billing first and last name) - the customer.name
+        // should be the person, not the company (company goes to customer_business_name).
         $contact_person = trim($order->get_billing_first_name() . ' ' . $order->get_billing_last_name());
+        $customer_name = $contact_person;
         
-        // Use company name as customer.name if available, otherwise fallback to contact person
-        $customer_name = !empty($company_name) ? $company_name : $contact_person;
-        
-        // Get tax ID if available
-        $tax_id = $order->get_meta('_billing_tax_id');
-        if (empty($tax_id)) {
-            // Try alternative meta key formats
-            $tax_id = $order->get_meta('billing_tax_id');
-        }
+        // Get tax ID if available (billing meta, alt format, then the "Purchasing as a business" field)
+        $tax_id = $order->get_meta('_billing_tax_id') ?: $order->get_meta('billing_tax_id') ?: $order->get_meta('_dodo_tax_id');
         
         // Build customer object - only include phone if provided
         $customer = array(
@@ -292,6 +287,16 @@ class Dodo_Payments_API
             'return_url' => $return_url,
         );
 
+        // B2B: tax_id requires billing country; business_name only with tax_id. Prefilling both activates the "Purchasing as a business" state.
+        $is_b2b = $buy_as_company && !empty($tax_id) && !empty($order->get_billing_country());
+        if ($is_b2b) {
+            $request['tax_id'] = $tax_id;
+            if (!empty(trim($company_name))) {
+                // Dodo docs: max 250 chars; surrounding whitespace is trimmed server-side.
+                $request['customer_business_name'] = mb_substr($company_name, 0, 250);
+            }
+        }
+
         // Add discount code if provided
         if ($dodo_discount_code) {
             $request['discount_code'] = $dodo_discount_code;
@@ -304,6 +309,13 @@ class Dodo_Payments_API
         
         if ($enable_tax_id_collection) {
             $feature_flags['allow_tax_id'] = true;
+        }
+
+        // A prefilled Tax ID / business name is locked on the checkout form unless the
+        // customer can edit it (Dodo docs: allow_customer_editing_* flags, default false).
+        if ($is_b2b) {
+            $feature_flags['allow_customer_editing_tax_id'] = true;
+            $feature_flags['allow_customer_editing_business_name'] = true;
         }
 
         $request['feature_flags'] = $feature_flags;

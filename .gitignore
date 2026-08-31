@@ -8,3 +8,5 @@ build/
 .claude
 docs/
 reference-files/
+AGENTS.md
+tests/

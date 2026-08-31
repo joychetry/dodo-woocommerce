@@ -1052,12 +1052,29 @@ function dodo_payments_init()
             {
                 // Get checkout object
                 $checkout = WC()->checkout();
-                
+
+                // Prefill from saved user meta; POST/WC session wins, and a saved 'no' never re-checks the box.
+                $user_id = get_current_user_id();
+                $buy_as_company = $checkout->get_value('buy_as_company_checkbox');
+                $company_name   = $checkout->get_value('custom_company_name');
+                $tax_id         = $checkout->get_value('dodo_tax_id');
+                if ($user_id) {
+                    if (empty($buy_as_company) && 'yes' === get_user_meta($user_id, '_dodo_buy_as_company', true)) {
+                        $buy_as_company = '1';
+                    }
+                    if (empty($company_name)) {
+                        $company_name = get_user_meta($user_id, '_dodo_custom_company_name', true);
+                    }
+                    if (empty($tax_id)) {
+                        $tax_id = get_user_meta($user_id, '_dodo_tax_id', true);
+                    }
+                }
+
                 echo '<div id="buy_as_company_fields">';
                 // Add toggle switch for "Buy as company"
                 echo '<div class="form-row form-row-wide dodo-toggle-wrapper">';
                 echo '<label class="dodo-toggle-label">';
-                echo '<input type="checkbox" name="buy_as_company_checkbox" id="buy_as_company_checkbox" class="dodo-toggle-input" value="1" ' . checked($checkout->get_value('buy_as_company_checkbox'), true, false) . '>';
+                echo '<input type="checkbox" name="buy_as_company_checkbox" id="buy_as_company_checkbox" class="dodo-toggle-input" value="1" ' . checked($buy_as_company, '1', false) . '>';
                 echo '<span class="dodo-toggle-slider"></span>';
                 echo '<span class="dodo-toggle-text">' . esc_html__('Purchasing as a business', 'dodo-payments-for-woocommerce') . '</span>';
                 echo '</label>';
@@ -1069,12 +1086,15 @@ function dodo_payments_init()
                     'label'       => __('Company Name', 'dodo-payments-for-woocommerce'),
                     'required'    => false,
                     'placeholder' => __('Enter company name', 'dodo-payments-for-woocommerce'),
-                ), $checkout->get_value('custom_company_name'));
+                ), $company_name);
 
-                // Add informational text about tax ID
-                echo '<p class="form-row form-row-wide dodo-tax-id-info" style="font-size: 0.9em; margin-top: -10px; margin-bottom: 15px;">';
-                echo esc_html__('Enter company name to wish to see it in the invoice. You can enter your Tax ID VAT/GST on the payment page by selecting "Purchasing as a business".', 'dodo-payments-for-woocommerce');
-                echo '</p>';
+                woocommerce_form_field('dodo_tax_id', array(
+                    'type'        => 'text',
+                    'class'       => array('form-row-wide'),
+                    'label'       => __('Tax ID (VAT/GST)', 'dodo-payments-for-woocommerce'),
+                    'required'    => false,
+                    'placeholder' => __('Enter Tax ID, e.g. VAT number or GST number', 'dodo-payments-for-woocommerce'),
+                ), $tax_id);
 
                 echo '</div>';
 
@@ -1129,8 +1149,11 @@ function dodo_payments_init()
                         transform: translateX(16px);
                     }
                     
-                    /* Hide company name field initially */
+                    /* Hide company name and tax ID fields initially */
                     #custom_company_name_field { display: none; margin-top: -12px; }
+                    #dodo_tax_id_field { display: none; margin-top: -8px; }
+                    /* Hide the (optional) suffix on our fields */
+                    #dodo_tax_id_field .optional, #custom_company_name_field .optional { display: none; }
                     .dodo-tax-id-info { display: none; }
                 </style>';
             }
@@ -1156,12 +1179,16 @@ function dodo_payments_init()
                 }
 
                 $buy_as_company = isset($_POST['buy_as_company_checkbox']) && '1' === sanitize_text_field(wp_unslash($_POST['buy_as_company_checkbox']));
-                $custom_company_name = isset($_POST['custom_company_name']) ? sanitize_text_field(wp_unslash($_POST['custom_company_name'])) : '';
+                $custom_company_name = isset($_POST['custom_company_name']) ? trim(sanitize_text_field(wp_unslash($_POST['custom_company_name']))) : '';
+                $tax_id = isset($_POST['dodo_tax_id']) ? trim(sanitize_text_field(wp_unslash($_POST['dodo_tax_id']))) : '';
 
-                if ($buy_as_company && empty($custom_company_name)) {
-                    $default_company = isset($_POST['billing_company']) ? sanitize_text_field(wp_unslash($_POST['billing_company'])) : '';
-                    if (empty($default_company)) {
+                if ($buy_as_company) {
+                    $default_company = isset($_POST['billing_company']) ? trim(sanitize_text_field(wp_unslash($_POST['billing_company']))) : '';
+                    if (empty($custom_company_name) && empty($default_company)) {
                         wc_add_notice(__('Company name is required when "Buy as Company" is checked.', 'dodo-payments-for-woocommerce'), 'error');
+                    }
+                    if (empty($tax_id)) {
+                        wc_add_notice(__('Tax ID (VAT/GST) is required when "Buy as Company" is checked.', 'dodo-payments-for-woocommerce'), 'error');
                     }
                 }
             }
@@ -1184,15 +1211,36 @@ function dodo_payments_init()
                 }
 
                 $buy_as_company = isset($_POST['buy_as_company_checkbox']) && '1' === sanitize_text_field(wp_unslash($_POST['buy_as_company_checkbox'])) ? 'yes' : 'no';
-                $custom_company_name = isset($_POST['custom_company_name']) ? sanitize_text_field(wp_unslash($_POST['custom_company_name'])) : '';
+                $custom_company_name = isset($_POST['custom_company_name']) ? trim(sanitize_text_field(wp_unslash($_POST['custom_company_name']))) : '';
+                $tax_id = isset($_POST['dodo_tax_id']) ? trim(sanitize_text_field(wp_unslash($_POST['dodo_tax_id']))) : '';
 
                 $order = wc_get_order($order_id);
                 if ($order) {
                     $order->update_meta_data('_buy_as_company_checkbox', $buy_as_company);
-                    if (!empty($custom_company_name)) {
-                        $order->update_meta_data('_custom_company_name', $custom_company_name);
+                    // Company/tax meta only on B2B orders; fields stay populated when toggled off,
+                    // so without this gate a non-business order would record them.
+                    if ('yes' === $buy_as_company) {
+                        if (!empty($custom_company_name)) {
+                            $order->update_meta_data('_custom_company_name', $custom_company_name);
+                        }
+                        if (!empty($tax_id)) {
+                            $order->update_meta_data('_dodo_tax_id', $tax_id);
+                        }
                     }
                     $order->save();
+                }
+
+                // Remember the choices on the customer's account so the fields are
+                // prefilled on their next checkout instead of re-entered every time.
+                $user_id = get_current_user_id();
+                if ($user_id) {
+                    update_user_meta($user_id, '_dodo_buy_as_company', $buy_as_company);
+                    if (!empty($custom_company_name)) {
+                        update_user_meta($user_id, '_dodo_custom_company_name', $custom_company_name);
+                    }
+                    if (!empty($tax_id)) {
+                        update_user_meta($user_id, '_dodo_tax_id', $tax_id);
+                    }
                 }
             }
 
