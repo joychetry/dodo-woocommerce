@@ -664,6 +664,32 @@ class Dodo_Payments_API
     }
 
     /**
+     * Retrieves a discount code by its code name (e.g. 'SAVE20') instead of the internal ID.
+     *
+     * Used to recover a discount when the cached internal ID mapping has gone stale (deleted
+     * or recreated server-side). Returns the same shape as get_discount_code().
+     *
+     * @param string $code The discount code name.
+     * @return array|false Discount code data as an associative array, or false if not found or on error.
+     */
+    public function get_discount_code_by_code($code)
+    {
+        $res = $this->get('/discounts/code/' . rawurlencode($code));
+
+        if (is_wp_error($res)) {
+            $this->log_debug("Failed to get discount code by code ($code): " . $res->get_error_message());
+            return false;
+        }
+
+        if (wp_remote_retrieve_response_code($res) === 404) {
+            $this->log_debug("Discount code ($code) not found: " . $res['body']);
+            return false;
+        }
+
+        return json_decode($res['body'], true);
+    }
+
+    /**
      * Creates a new discount code in the Dodo Payments API.
      *
      * Sends the provided discount code details to the API and returns the created discount code data.
@@ -1293,79 +1319,42 @@ class Dodo_Payments_API
     }
 
     /**
-     * Retrieves invoice URL for a payment from the Dodo Payments API.
+     * Retrieves the invoice URL for a payment from the Dodo Payments API.
      *
-     * Note: Documentation states the API returns application/pdf (binary PDF),
-     * but the implementation expects JSON with URL fields. This method handles
-     * both scenarios. If the API actually returns PDF, we'll need to implement
-     * file handling or find an alternative endpoint that returns JSON.
+     * The invoice endpoint (get /invoices/payments/{payment_id}) returns a PDF binary,
+     * so instead we fetch the payment object and read its `invoice_url` field (added in
+     * Dodo API v1.75.0).
      *
      * @param string $payment_id The Dodo Payments payment ID.
      * @return string|false The invoice URL if found, or false on error.
      */
     public function get_payment_invoice($payment_id)
     {
-        $res = $this->get("/invoices/payments/{$payment_id}");
+        $res = $this->get("/payments/{$payment_id}");
 
         if (is_wp_error($res)) {
-            $this->log_debug("Failed to get invoice for payment ($payment_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get payment ($payment_id): " . $res->get_error_message());
             return false;
         }
 
         $response_code = wp_remote_retrieve_response_code($res);
-        if ($response_code === 404) {
-            $this->log_debug("Invoice not found for payment ($payment_id)");
-            return false;
-        }
-
         if ($response_code !== 200) {
-            $this->log_debug("Failed to get invoice for payment ($payment_id): HTTP $response_code");
+            $this->log_debug("Failed to get payment ($payment_id): HTTP $response_code");
             return false;
         }
 
-        // Check content type to determine response format
-        $content_type = wp_remote_retrieve_header($res, 'content-type');
-
-        // If response is PDF (as per documentation), we need to handle it differently
-        if ($content_type && strpos($content_type, 'application/pdf') !== false) {
-            // TODO: Handle PDF response - may need to save to file or use alternative endpoint
-            // For now, log this case for investigation
-            $this->log_debug("Invoice API returned PDF instead of JSON for payment ($payment_id). Need to implement PDF handling.");
-            return false;
-        }
-
-        // Try to parse as JSON (expected format)
         $response_body = json_decode(wp_remote_retrieve_body($res), true);
 
         if (!is_array($response_body)) {
-            $this->log_debug("Invalid JSON response for invoice ($payment_id). Content-Type: " . $content_type);
+            $this->log_debug("Invalid JSON response for payment ($payment_id).");
             return false;
         }
-        
-        // Check for invoice URL in various possible response formats
-        // Docs show different formats: invoice_pdf_url, pdf_url, invoice_url, url
-        if (isset($response_body['invoice_pdf_url'])) {
-            return $response_body['invoice_pdf_url'];
-        }
-        
-        if (isset($response_body['pdf_url'])) {
-            return $response_body['pdf_url'];
-        }
-        
+
         if (isset($response_body['invoice_url'])) {
             return $response_body['invoice_url'];
         }
-        
-        if (isset($response_body['url'])) {
-            return $response_body['url'];
-        }
-        
-        // If response contains invoice_pdf field
-        if (isset($response_body['invoice_pdf'])) {
-            return $response_body['invoice_pdf'];
-        }
 
-        $this->log_debug("Invoice response for payment ($payment_id) does not contain expected URL fields: " . wc_print_r($response_body, true));
+        $this->log_debug("Payment response for ($payment_id) does not contain invoice_url: " . wc_print_r($response_body, true));
         return false;
     }
 

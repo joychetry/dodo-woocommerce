@@ -365,6 +365,21 @@ private function handle_subscription_webhook($payload, $status)
 
     $wc_subscription_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($subscription_id);
 
+    // The mapping may be missing if the return URL was never hit or the webhook arrived
+    // first. Fall back to metadata.wc_order_id (set at checkout) and resolve the child
+    // subscription from the parent order, same as the payment webhook handler.
+    if (!$wc_subscription_id && isset($payload['data']['metadata']['wc_order_id'])) {
+        $order_id = absint($payload['data']['metadata']['wc_order_id']);
+
+        if ($order_id) {
+            $wc_subscription_id = $this->find_subscription_id_from_order($order_id);
+
+            if ($wc_subscription_id) {
+                Dodo_Payments_Subscription_DB::save_mapping($wc_subscription_id, $subscription_id);
+            }
+        }
+    }
+
     if (!$wc_subscription_id) {
         $this->log_debug('Could not find WooCommerce subscription for subscription ID ' . $subscription_id);
         return;
@@ -462,6 +477,33 @@ private function handle_subscription_renewal($subscription)
     // TODO: handle renewal from the 'subscription.renewed' webhook when
     // it includes the `payment_id` and pass it to `$order->payment_complete($payment_id)`.
     // This will help the merchant link the renewal order to the payment ID.
+}
+
+/**
+ * Resolve the WooCommerce subscription ID (WCS or License Monks) from a parent order ID.
+ *
+ * @param int $order_id The parent WooCommerce order ID.
+ * @return int|null The child subscription ID, or null if none found.
+ */
+private function find_subscription_id_from_order($order_id)
+{
+    if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
+        $subscriptions = wcs_get_subscriptions_for_order($order_id);
+        if (!empty($subscriptions)) {
+            $subscription = reset($subscriptions);
+            return $subscription ? $subscription->get_id() : null;
+        }
+    }
+
+    // License Monks subscriptions: child lm_subscription orders of the parent order.
+    $lm_subscription_ids = wc_get_orders(array(
+        'type'   => 'lm_subscription',
+        'parent' => $order_id,
+        'limit'  => 1,
+        'return' => 'ids',
+    ));
+
+    return !empty($lm_subscription_ids) ? (int) reset($lm_subscription_ids) : null;
 }
 
 /**

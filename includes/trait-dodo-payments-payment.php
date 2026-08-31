@@ -1014,9 +1014,21 @@ private function sync_coupon($coupon_code)
         }
     }
 
-    if (!$dodo_discount_id || !$dodo_discount) {
-        // FIXME: This will not work if the discount code already exists with a different id
-        // need to find a way to get the id of the existing discount code
+    // The cached ID mapping may be stale (discount deleted/recreated server-side).
+    // Recover the existing discount by its code name before falling back to creating one.
+    if (!$dodo_discount) {
+        $dodo_discount = $this->dodo_payments_api->get_discount_code_by_code($coupon->get_code());
+
+        if (!!$dodo_discount) {
+            $dodo_discount_id = $dodo_discount['discount_id'];
+            Dodo_Payments_Coupon_DB::save_mapping($coupon->get_id(), $dodo_discount_id);
+
+            $dodo_discount = $this->dodo_payments_api->update_discount_code($dodo_discount_id, $dodo_discount_req_body);
+            $dodo_discount_code = $dodo_discount['code'];
+        }
+    }
+
+    if (!$dodo_discount) {
         $dodo_discount = $this->dodo_payments_api->create_discount_code($dodo_discount_req_body);
 
         $dodo_discount_id = $dodo_discount['discount_id'];
@@ -1060,7 +1072,7 @@ private static function wc_coupon_to_dodo_discount_body($coupon)
     /** @var string|null */
     $expires_at = $coupon->get_date_expires() ? (string) $coupon->get_date_expires() : null;
 
-    return array(
+    $body = array(
         'type' => 'percentage',
         'code' => $coupon->get_code(),
         'amount' => $coupon_amount,
@@ -1068,6 +1080,23 @@ private static function wc_coupon_to_dodo_discount_body($coupon)
         'usage_limit' => $usage_limit,
         'restricted_to' => $restricted_to,
     );
+
+    // License Monks: "Subscription Discount Cycle" coupon flag (first year only).
+    // Map it to Dodo's native subscription_cycles so the discount stops after
+    // the first billing cycle and renewals are charged at full price.
+    //
+    // A free-trial $0 mandate does NOT consume a subscription_cycles count:
+    // the trial is before the first billing cycle, a free trial has no charge
+    // event, and trial_apply_discounts (default false) decouples discount codes
+    // from the trial charge. So subscription_cycles=1 discounts exactly the
+    // first real (paid) billing cycle after the trial ends.
+    if (class_exists('LicenseMonks_Subscription_Coupon_Types')
+        && is_callable(array('LicenseMonks_Subscription_Coupon_Types', 'is_first_cycle_only'))
+        && LicenseMonks_Subscription_Coupon_Types::is_first_cycle_only($coupon)) {
+        $body['subscription_cycles'] = 1;
+    }
+
+    return $body;
 }
 
 private function get_base_url()

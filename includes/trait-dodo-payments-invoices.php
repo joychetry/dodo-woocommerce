@@ -212,8 +212,42 @@ public function add_admin_invoice_hooks()
         add_action('manage_shop_order_posts_custom_column', array($this, 'render_invoice_column_legacy'), 20, 2);
     }
 
+    // Add an invoice action button to the Actions column (HPOS + legacy share this hook).
+    add_filter('woocommerce_admin_order_actions', array($this, 'add_invoice_action'), 20, 2);
+
     // Add invoice section to order edit page (works for both HPOS and legacy)
     add_action('woocommerce_admin_order_data_after_order_details', array($this, 'display_admin_invoice_section'), 10, 1);
+}
+
+/**
+ * Adds an invoice action button to the order list Actions column.
+ *
+ * @param array    $actions Existing action buttons.
+ * @param WC_Order $order   The order object.
+ * @return array Modified actions.
+ * @since 1.0.0
+ */
+public function add_invoice_action($actions, $order)
+{
+    if (!$order instanceof WC_Order || $order->get_payment_method() !== $this->id) {
+        return $actions;
+    }
+
+    $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
+    $invoice_url = $invoice_helper->get_invoice_url($order);
+
+    if (!$invoice_url) {
+        return $actions;
+    }
+
+    $actions['invoice'] = array(
+        'url'    => $invoice_url,
+        'name'   => __('Invoice', 'dodo-payments-for-woocommerce'),
+        'action' => 'invoice',
+        'title'  => __('View Dodo Payments invoice', 'dodo-payments-for-woocommerce'),
+    );
+
+    return $actions;
 }
 
 /**
