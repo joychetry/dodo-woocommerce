@@ -131,6 +131,41 @@ function dodo_payments_add_gateway_class_to_woo($gateways)
 }
 
 /**
+ * Keep free-trial subscription parent orders in "pending" for the full trial.
+ *
+ * WooCommerce's unpaid-order sweeper (woocommerce_cancel_unpaid_orders) cancels any
+ * "pending" order whose last update is older than woocommerce_hold_stock_minutes
+ * (~60 min by default). A trial parent order legitimately stays "pending" until the
+ * trial ends — the $0 mandate webhook deliberately skips payment_complete() — so
+ * without this exemption it gets cancelled within an hour while the subscription is
+ * still in its trial.
+ *
+ * @since 1.1.0
+ */
+add_filter('woocommerce_cancel_unpaid_order', 'dodo_payments_keep_trial_orders_pending', 10, 2);
+function dodo_payments_keep_trial_orders_pending($cancel, $order)
+{
+    if (!$cancel || $order->get_payment_method() !== 'dodo_payments') {
+        return $cancel;
+    }
+
+    // The trial flag lives on the subscription, not the parent. Resolve it via the
+    // _lm_subscription_id stored on each line item at subscription creation.
+    foreach ($order->get_items() as $item) {
+        $subscription_id = $item->get_meta('_lm_subscription_id', true);
+        if (!$subscription_id) {
+            continue;
+        }
+        $subscription = wc_get_order($subscription_id);
+        if ($subscription && is_a($subscription, 'LicenseMonks_Subscription') && $subscription->has_trial()) {
+            return false; // In free trial — do not auto-cancel.
+        }
+    }
+
+    return $cancel;
+}
+
+/**
  * Registers the invoice admin hooks (orders-list action button, columns, order-edit section)
  * independently of the payment gateway being instantiated.
  *
