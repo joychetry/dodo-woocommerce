@@ -228,15 +228,15 @@ public function add_admin_invoice_hooks()
 public function print_invoice_button_target_script()
 {
     ?>
-    <script>
-    (function () {
-        var buttons = document.querySelectorAll('a.wc-action-button[title="View Dodo Payments invoice"]');
-        for (var i = 0; i < buttons.length; i++) {
-            buttons[i].setAttribute('target', '_blank');
-        }
-    })();
-    </script>
-    <?php
+<script>
+(function() {
+    var buttons = document.querySelectorAll('a.wc-action-button[title="View Dodo Payments invoice"]');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].setAttribute('target', '_blank');
+    }
+})();
+</script>
+<?php
 }
 
 /**
@@ -393,8 +393,8 @@ public function display_admin_invoice_section($order)
     <h3><?php esc_html_e('Dodo Payments Invoice', 'dodo-payments-for-woocommerce'); ?></h3>
     <p class="form-field">
         <a href="<?php echo esc_url($invoice_url); ?>" target="_blank" class="button button-primary">
-<span class="dashicons dashicons-media-document" style="vertical-align: middle; margin-right: 5px;"></span>
-<?php esc_html_e('View Invoice', 'dodo-payments-for-woocommerce'); ?>
+            <span class="dashicons dashicons-media-document"></span>
+            <?php esc_html_e('View Invoice', 'dodo-payments-for-woocommerce'); ?>
         </a>
     </p>
 </div>
