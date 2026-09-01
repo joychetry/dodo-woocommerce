@@ -129,3 +129,26 @@ function dodo_payments_add_gateway_class_to_woo($gateways)
     $gateways[] = 'Dodo_Payments_WC_Gateway';
     return $gateways;
 }
+
+/**
+ * Registers the invoice admin hooks (orders-list action button, columns, order-edit section)
+ * independently of the payment gateway being instantiated.
+ *
+ * WC_Payment_Gateways only instantiates gateways lazily (Settings page, bulk actions, checkout),
+ * so the orders list page would otherwise render without the invoice action button. Registering
+ * the hooks here (guarded by is_admin) makes the button appear consistently on every admin request.
+ *
+ * @since 1.0.1
+ */
+add_action('admin_init', 'dodo_payments_register_admin_invoice_hooks');
+function dodo_payments_register_admin_invoice_hooks()
+{
+    if (!is_admin() || !class_exists('Dodo_Payments_WC_Gateway') || !method_exists('Dodo_Payments_WC_Gateway', 'add_admin_invoice_hooks')) {
+        return;
+    }
+
+    // Build a minimal gateway instance to access the trait methods. The constructor reads settings
+    // and instantiates the API client; that's fine in admin (cheap, no network until used).
+    $gateway = new Dodo_Payments_WC_Gateway();
+    $gateway->add_admin_invoice_hooks();
+}

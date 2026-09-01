@@ -215,8 +215,32 @@ public function add_admin_invoice_hooks()
     // Add an invoice action button to the Actions column (HPOS + legacy share this hook).
     add_filter('woocommerce_admin_order_actions', array($this, 'add_invoice_action'), 20, 2);
 
+    // wc_render_action_buttons() doesn't support a 'target' key, so open the invoice
+    // in a new tab via a tiny admin-footer script.
+    add_action('admin_print_footer_scripts', array($this, 'print_invoice_button_target_script'));
+
     // Add invoice section to order edit page (works for both HPOS and legacy)
     add_action('woocommerce_admin_order_data_after_order_details', array($this, 'display_admin_invoice_section'), 10, 1);
+}
+
+/**
+ * Opens the invoice action button in a new tab.
+ *
+ * @return void
+ * @since 1.0.1
+ */
+public function print_invoice_button_target_script()
+{
+    ?>
+    <script>
+    (function () {
+        var buttons = document.querySelectorAll('a.wc-action-button[title="View Dodo Payments invoice"]');
+        for (var i = 0; i < buttons.length; i++) {
+            buttons[i].setAttribute('target', '_blank');
+        }
+    })();
+    </script>
+    <?php
 }
 
 /**
@@ -240,10 +264,12 @@ public function add_invoice_action($actions, $order)
         return $actions;
     }
 
+    // 'view' renders a core WooCommerce action-button icon (dashicons-visibility);
+    // a custom class like 'invoice' gets no ::after glyph and shows as a blank square.
     $actions['invoice'] = array(
         'url'    => $invoice_url,
         'name'   => __('Invoice', 'dodo-payments-for-woocommerce'),
-        'action' => 'invoice',
+        'action' => 'view',
         'title'  => __('View Dodo Payments invoice', 'dodo-payments-for-woocommerce'),
     );
 
