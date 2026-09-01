@@ -152,3 +152,33 @@ function dodo_payments_register_admin_invoice_hooks()
     $gateway = new Dodo_Payments_WC_Gateway();
     $gateway->add_admin_invoice_hooks();
 }
+
+/**
+ * Adds the Invoice column to the My Account orders table (frontend for customers).
+ *
+ * WC_Payment_Gateways only instantiates gateways lazily (Settings page, bulk actions, checkout),
+ * so the My Account orders page — which renders wc_get_account_orders_columns() without touching
+ * gateways — would otherwise render without the Invoice column. These plugin-level hooks delegate
+ * to the gateway methods and instantiate the gateway lazily on first render.
+ *
+ * @since 1.0.1
+ */
+add_filter('woocommerce_account_orders_columns', 'dodo_payments_add_myaccount_invoice_column', 10, 1);
+function dodo_payments_add_myaccount_invoice_column($columns)
+{
+    static $gateway = null;
+    if (null === $gateway) {
+        $gateway = new Dodo_Payments_WC_Gateway();
+    }
+    return $gateway->add_myaccount_invoice_column($columns);
+}
+
+add_action('woocommerce_my_account_my_orders_column_invoice', 'dodo_payments_render_myaccount_invoice_column', 10, 1);
+function dodo_payments_render_myaccount_invoice_column($order)
+{
+    static $gateway = null;
+    if (null === $gateway) {
+        $gateway = new Dodo_Payments_WC_Gateway();
+    }
+    $gateway->render_myaccount_invoice_column($order);
+}

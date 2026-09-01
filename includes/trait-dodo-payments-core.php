@@ -69,9 +69,10 @@ public function __construct()
     add_action('init', array($this, 'add_invoice_endpoint'));
     add_action('init', array($this, 'maybe_flush_rewrite_rules'));
 
-    // Invoice display in My Account orders table (frontend for customers)
-    add_filter('woocommerce_account_orders_columns', array($this, 'add_myaccount_invoice_column'), 10, 1);
-    add_action('woocommerce_account_orders_column_invoice', array($this, 'render_myaccount_invoice_column'), 10, 1);
+    // Invoice display in My Account orders table (frontend for customers) is registered at
+    // plugin level in dodo-payments-for-woocommerce.php — NOT here. The constructor would
+    // double-register those hooks whenever the gateway is instantiated (e.g. on checkout),
+    // rendering the Invoice column twice.
 
     // Invoice display in admin (HPOS compatible)
     add_action('admin_init', array($this, 'add_admin_invoice_hooks'));

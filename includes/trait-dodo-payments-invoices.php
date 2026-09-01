@@ -163,13 +163,11 @@ public function render_myaccount_invoice_column($order_or_order_id)
     }
 
     if (!$order instanceof WC_Order) {
-        echo '—';
         return;
     }
 
     // Only show for Dodo Payments orders
     if ($order->get_payment_method() !== $this->id) {
-        echo '—';
         return;
     }
 
@@ -180,8 +178,6 @@ public function render_myaccount_invoice_column($order_or_order_id)
         echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button button-small" title="' . esc_attr__('View Invoice', 'dodo-payments-for-woocommerce') . '">';
         echo esc_html__('View', 'dodo-payments-for-woocommerce');
         echo '</a>';
-    } else {
-        echo '<span style="color: #999;">' . esc_html__('N/A', 'dodo-payments-for-woocommerce') . '</span>';
     }
 }
 
