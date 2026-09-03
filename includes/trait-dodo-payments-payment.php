@@ -437,13 +437,25 @@ public function do_payment($order)
         // Use checkout sessions API when tax ID collection is enabled OR overlay checkout is enabled
         // This provides a modern checkout experience with additional features
         if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
+            // Skip-trial only on re-pay of an existing order. A fresh checkout has no
+            // _dodo_checkout_session_id yet (it is written at the end of this method),
+            // so trial stays intact; once the order has been through Dodo once (e.g. a
+            // pending trial order re-paid from the orders table), suppress the product's
+            // trial so the customer pays the order total instead of a confusing $0.
+            $already_in_dodo = (bool) $order->get_meta('_dodo_checkout_session_id');
+            $skip_trial = apply_filters(
+                'dodo_payments_skip_trial',
+                (bool) ($order->get_total() > 0 && $already_in_dodo && $contains_subscription),
+                $order
+            );
             $response = $this->dodo_payments_api->create_checkout_session(
                 $order,
                 $synced_products,
                 $dodo_discount_code,
                 $this->get_return_url($order),
                 $this->enable_tax_id_collection,
-                null
+                null,
+                $skip_trial
             );
         } else {
             $response = $contains_subscription

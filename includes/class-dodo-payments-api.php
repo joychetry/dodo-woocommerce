@@ -243,7 +243,7 @@ class Dodo_Payments_API
      * @throws \Exception If the API request fails or returns an error.
      * @return array{session_id: string, checkout_url: string} The created checkout session's ID and URL.
      */
-    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null)
+    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null, $skip_trial = false)
     {
         // Get company name information
         $default_company_name = $order->get_billing_company();
@@ -340,6 +340,12 @@ class Dodo_Payments_API
         }
 
         $request['feature_flags'] = $feature_flags;
+
+        // Skip-trial: subscription sessions that must charge the full first cycle now.
+        // trial_period_days is the documented per-subscription override; 0 disables the product's trial.
+        if ($skip_trial) {
+            $request['subscription_data'] = array('trial_period_days' => 0);
+        }
 
         // Add metadata with company information
         // Note: All metadata values must be strings per Dodo Payments API requirements
