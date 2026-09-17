@@ -70,6 +70,9 @@ private function cancel_lm_subscription($subscription)
 {
     $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
     if (!$dodo_subscription_id) {
+        // The mapping is saved when the first webhook arrives, so it may not exist yet.
+        $this->log_debug('Could not cancel Dodo subscription for LM subscription #' . $subscription->get_id() . ': no Dodo subscription ID mapped');
+        $subscription->add_order_note(__('Dodo Payments: could not cancel the subscription in Dodo Payments because no Dodo subscription ID is linked yet. Check the Dodo Payments dashboard and cancel it there if it is active.', 'dodo-payments-for-woocommerce'));
         return;
     }
 
