@@ -5,7 +5,7 @@
  * Plugin URI: https://dodopayments.com
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: Dodo Payments
  * Developer: Dodo Payments
  * Text Domain: dodo-payments-for-woocommerce
@@ -163,6 +163,64 @@ function dodo_payments_keep_trial_orders_pending($cancel, $order)
     }
 
     return $cancel;
+}
+
+/**
+ * Returns the Dodo Payments gateway instance registered with WooCommerce.
+ *
+ * Calling WC()->payment_gateways() loads the gateways if this request has not done so yet,
+ * and reuses the same instance otherwise.
+ *
+ * @since 1.1.1
+ * @return Dodo_Payments_WC_Gateway|null
+ */
+function dodo_payments_get_gateway()
+{
+    if (!function_exists('WC') || !WC()->payment_gateways()) {
+        return null;
+    }
+
+    $gateways = WC()->payment_gateways()->payment_gateways();
+
+    if (!isset($gateways['dodo_payments'])) {
+        wc_get_logger()->warning('Dodo Payments: gateway not found, subscription change was not synced to Dodo Payments.', array('source' => 'dodo-payments'));
+        return null;
+    }
+
+    return $gateways['dodo_payments'];
+}
+
+/**
+ * Syncs subscription status and date changes to Dodo Payments.
+ *
+ * Registered at plugin level because gateways are instantiated lazily and some requests
+ * (e.g. cancelling an order from My Account) never load them.
+ *
+ * @since 1.1.1
+ */
+add_action('plugins_loaded', 'dodo_payments_register_subscription_sync_hooks', 20);
+function dodo_payments_register_subscription_sync_hooks()
+{
+    add_action('woocommerce_subscription_status_updated', function ($subscription, $new_status, $old_status) {
+        $gateway = dodo_payments_get_gateway();
+        if ($gateway) {
+            $gateway->handle_subscription_status_updated($subscription, $new_status, $old_status);
+        }
+    }, 10, 3);
+
+    add_action('woocommerce_subscription_dates_updated', function ($subscription, $changed_dates) {
+        $gateway = dodo_payments_get_gateway();
+        if ($gateway) {
+            $gateway->handle_subscription_date_change($subscription, $changed_dates);
+        }
+    }, 10, 2);
+
+    add_action('licensemonks/subscription/status/updated', function ($subscription, $new_status, $old_status) {
+        $gateway = dodo_payments_get_gateway();
+        if ($gateway) {
+            $gateway->handle_lm_subscription_status_updated($subscription, $new_status, $old_status);
+        }
+    }, 10, 3);
 }
 
 /**
