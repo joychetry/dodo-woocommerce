@@ -222,6 +222,12 @@ private function handle_payment_webhook($payload, $status)
             }
             // ─── End trial guard ────────────────────────────────────────────────
 
+            // Ignore redelivered events for a payment that was held for admin review.
+            if ($order->get_meta('_dodo_held_payment_id') === $payment_id) {
+                $this->log_debug("payment.succeeded {$payment_id} already held for review on order #{$order_id}, ignoring duplicate");
+                break;
+            }
+
             // Ignore redelivered events for a payment that was already applied.
             if ($order->get_transaction_id() === $payment_id && ($order->is_paid() || $order->has_status('refunded'))) {
                 $this->log_debug("payment.succeeded {$payment_id} already applied to order #{$order_id} (status: {$order->get_status()}), ignoring duplicate");
@@ -348,6 +354,7 @@ private function handle_payment_for_cancelled_order($order, $payment_id, $payloa
     $this->log_debug("payment.succeeded {$payment_id} received for CANCELLED order #{$order_id} (amount: {$amount} {$currency} minor units). Order put on-hold for manual review.");
 
     $order->set_transaction_id($payment_id);
+    $order->update_meta_data('_dodo_held_payment_id', $payment_id);
     $order->update_status(
         'on-hold',
         sprintf(
@@ -395,6 +402,9 @@ private function handle_payment_for_cancelled_subscription($order, $subscription
     $dodo_subscription_id = $payload['data']['subscription_id'];
 
     $this->log_debug("payment.succeeded {$payment_id} received for {$subscription->get_status()} subscription #{$subscription->get_id()} (Dodo: {$dodo_subscription_id}, order #{$order->get_id()}). No order completed, no renewal created.");
+
+    $order->update_meta_data('_dodo_held_payment_id', $payment_id);
+    $order->save();
 
     $note = sprintf(
         // translators: %1$s: Payment ID, %2$s: Dodo subscription ID

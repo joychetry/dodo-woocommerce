@@ -182,7 +182,12 @@ function dodo_payments_get_gateway()
 
     $gateways = WC()->payment_gateways()->payment_gateways();
 
-    return isset($gateways['dodo_payments']) ? $gateways['dodo_payments'] : null;
+    if (!isset($gateways['dodo_payments'])) {
+        wc_get_logger()->warning('Dodo Payments: gateway not found, subscription change was not synced to Dodo Payments.', array('source' => 'dodo-payments'));
+        return null;
+    }
+
+    return $gateways['dodo_payments'];
 }
 
 /**
