@@ -183,7 +183,8 @@ private function handle_payment_webhook($payload, $status)
 
             if ($payment_amount === 0 && isset($payload['data']['subscription_id'])) {
                 $sub_id = $payload['data']['subscription_id'];
-                $wc_sub_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($sub_id);
+                // The mandate can arrive before the subscription mapping is saved; the trial flag must still be set.
+                $wc_sub_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($sub_id) ?: $this->find_subscription_id_from_order($order->get_id());
 
                 if ($wc_sub_id) {
                     $subscription = null;
@@ -213,6 +214,16 @@ private function handle_payment_webhook($payload, $status)
             }
             // ─── End trial guard ────────────────────────────────────────────────
 
+            // The parent's own charge is the one that set (or will set) its transaction id;
+            // payment status is unreliable because a failed renewal also marks the parent failed.
+            // Pin it in meta: payment_complete() on a failed parent overwrites the transaction id.
+            $parent_txn = (string) $order->get_meta('_dodo_parent_payment_id');
+            if ('' === $parent_txn) {
+                $parent_txn = (string) $order->get_transaction_id();
+                if (isset($payload['data']['subscription_id'])) {
+                    $order->update_meta_data('_dodo_parent_payment_id', '' === $parent_txn ? $payment_id : $parent_txn);
+                }
+            }
             $order->payment_complete($payment_id);
             $order->update_status('completed', __('Payment completed by Dodo Payments', 'dodo-payments-for-woocommerce'));
 
@@ -263,6 +274,19 @@ private function handle_payment_webhook($payload, $status)
                         . $subscription_id
                     );
                     return;
+                }
+
+                // A redelivered webhook must not renew twice, and the first non-trial
+                // charge (or its redelivery) pays the parent order itself, so it is not a renewal.
+                $seen = wc_get_orders(array(
+                    'transaction_id' => $payment_id,
+                    'meta_key' => '_lm_is_renewal_order',
+                    'limit' => 1,
+                    'return' => 'ids',
+                ));
+                $is_first_charge = ('' === $parent_txn || $payment_id === $parent_txn) && !$was_in_trial;
+                if (!empty($seen) || $is_first_charge) {
+                    break;
                 }
 
                 $dodo_subscription = $this->dodo_payments_api->get_subscription($subscription_id);
@@ -701,6 +725,8 @@ private function create_lm_renewal_order($subscription, $payment_id)
         return;
     }
 
+    // Set explicitly so the redelivery check finds this order even if payment_complete() is skipped.
+    $renewal_order->set_transaction_id($payment_id);
     $renewal_order->payment_complete($payment_id);
     $renewal_order->update_status('completed');
 
