@@ -16,7 +16,7 @@
     var title = decode(settings.title || '') || wp.i18n.__('Dodo Payments', 'dodo-payments-for-woocommerce');
 
     var Content = function () {
-        // Description is admin-set and passed through wp_kses_post() server-side.
+        // Description is admin-set and passed through kses server-side.
         return el('div', { dangerouslySetInnerHTML: { __html: settings.description || '' } });
     };
 

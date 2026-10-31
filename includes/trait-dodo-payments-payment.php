@@ -538,7 +538,7 @@ public function do_payment($order)
                 $order->add_order_note(
                     sprintf(
                         // translators: %1$s: Session ID
-                        __('Checkout session created in Dodo Payments: %1$s (Tax ID collection enabled)', 'dodo-payments-for-woocommerce'),
+                        __('Checkout session created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
                         $response['session_id']
                     )
                 );
