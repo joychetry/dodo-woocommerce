@@ -506,8 +506,10 @@ public function do_payment($order)
             // Store the session ID for future reference
             $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
 
-            // If overlay checkout is enabled, store checkout URL and redirect to checkout page
-            if ($this->enable_overlay_checkout) {
+            // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
+            // Checkout block orders arrive via the Store API (REST) and the block empties the cart
+            // before the overlay page loads, so those always use a plain redirect instead.
+            if ($this->enable_overlay_checkout && !WC()->is_rest_api_request()) {
                 $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
                 $order->save();
 
