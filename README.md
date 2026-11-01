@@ -20,9 +20,9 @@ Dodo Payments for WooCommerce enables you to accept payments from your customers
 
 ## Requirements
 
-- WordPress 6.1 or higher
+- WordPress 7.1 or higher
 - PHP 7.4 or higher
-- WooCommerce 7.9 or higher
+- WooCommerce 11.0 or higher
 - SSL certificate (for secure payment processing)
 
 ## Installation

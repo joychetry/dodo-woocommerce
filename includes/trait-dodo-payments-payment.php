@@ -21,9 +21,9 @@ public function process_payment($order_id)
 {
     $order = wc_get_order($order_id);
     $order->update_status('pending-payment', __('Awaiting payment via Dodo Payments', 'dodo-payments-for-woocommerce'));
-    wc_reduce_stock_levels($order_id);
 
     if ($order->get_total() == 0) {
+        wc_reduce_stock_levels($order_id);
         $order->payment_complete();
 
         WC()->cart->empty_cart();
@@ -34,7 +34,13 @@ public function process_payment($order_id)
     }
 
     $res = $this->do_payment($order);
-    WC()->cart->empty_cart();
+    // Keep the cart on failure so the buyer can fix the problem (e.g. a coupon) and retry.
+    // Stock too: a failed attempt left pending would otherwise hold it while the retry
+    // (new order once the cart changes) reduces it again.
+    if ('success' === ($res['result'] ?? '')) {
+        wc_reduce_stock_levels($order_id);
+        WC()->cart->empty_cart();
+    }
     return $res;
 }
 
@@ -51,8 +57,7 @@ public function enqueue_overlay_checkout_scripts()
         return;
     }
 
-    // Ensure WooCommerce is loaded
-    if (!function_exists('WC') || !WC()->session) {
+    if (!WC()->session) {
         return;
     }
 
@@ -61,54 +66,33 @@ public function enqueue_overlay_checkout_scripts()
     
     // Priority 1: Check URL parameter (for redirect back to checkout)
     if (isset($_GET['dodo_checkout_session_url'])) {
-        $checkout_session_url = sanitize_text_field(wp_unslash($_GET['dodo_checkout_session_url']));
-        // Store in session for persistence
-        if ($checkout_session_url && WC()->session) {
+        $url = esc_url_raw(wp_unslash($_GET['dodo_checkout_session_url']), array('https'));
+        $host = (string) wp_parse_url($url, PHP_URL_HOST);
+        // Only Dodo-hosted checkout pages may be opened in the overlay.
+        if ('dodopayments.com' === $host || str_ends_with($host, '.dodopayments.com')) {
+            $checkout_session_url = $url;
             WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
         }
     }
-    
+
     // Priority 2: Check WooCommerce session (stored during payment processing)
-    if (!$checkout_session_url && WC()->session) {
+    if (!$checkout_session_url) {
         $checkout_session_url = WC()->session->get('dodo_checkout_session_url');
     }
-    
+
     // Priority 3: Try to get from order being processed
-    if (!$checkout_session_url && WC()->session && WC()->session->get('order_awaiting_payment')) {
-        $order_id = WC()->session->get('order_awaiting_payment');
-        $order = wc_get_order($order_id);
+    if (!$checkout_session_url && WC()->session->get('order_awaiting_payment')) {
+        $order = wc_get_order(WC()->session->get('order_awaiting_payment'));
         if ($order && $order->get_payment_method() === $this->id) {
             $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
             // Store in session for next page load
-            if ($checkout_session_url && WC()->session) {
-                WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
-            }
-        }
-    }
-    
-    // Priority 4: Check recent orders for this user (fallback)
-    if (!$checkout_session_url && is_user_logged_in()) {
-        $recent_orders = wc_get_orders(array(
-            'customer' => get_current_user_id(),
-            'limit' => 1,
-            'orderby' => 'date',
-            'order' => 'DESC',
-            'payment_method' => $this->id,
-            'status' => 'pending',
-        ));
-        
-        if (!empty($recent_orders)) {
-            $order = reset($recent_orders);
-            $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
-            // Store in session for next page load
-            if ($checkout_session_url && WC()->session) {
+            if ($checkout_session_url) {
                 WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
             }
         }
     }
 
     if (!$checkout_session_url) {
-        $this->log_debug('Overlay checkout script not enqueued - no checkout session URL found');
         return; // No checkout session URL available
     }
 
@@ -140,7 +124,7 @@ public function enqueue_overlay_checkout_scripts()
         'https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js',
         array(),
         '1.0.0', // Version for cache busting - will be updated with SDK releases
-        true
+        array('in_footer' => true, 'strategy' => 'defer')
     );
 
     // Enqueue our overlay checkout script
@@ -149,7 +133,7 @@ public function enqueue_overlay_checkout_scripts()
         DODO_PAYMENTS_PLUGIN_URL . 'assets/js/dodo-checkout-overlay.min.js',
         array('dodo-payments-checkout-sdk', 'jquery'),
         '0.5.0',
-        true
+        array('in_footer' => true, 'strategy' => 'defer')
     );
 
     // Pass data to JavaScript
@@ -506,8 +490,10 @@ public function do_payment($order)
             // Store the session ID for future reference
             $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
 
-            // If overlay checkout is enabled, store checkout URL and redirect to checkout page
-            if ($this->enable_overlay_checkout) {
+            // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
+            // Checkout block orders arrive via the Store API (REST) and the block empties the cart
+            // before the overlay page loads, so those always use a plain redirect instead.
+            if ($this->enable_overlay_checkout && !WC()->is_rest_api_request()) {
                 $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
                 $order->save();
 
@@ -536,7 +522,7 @@ public function do_payment($order)
                 $order->add_order_note(
                     sprintf(
                         // translators: %1$s: Session ID
-                        __('Checkout session created in Dodo Payments: %1$s (Tax ID collection enabled)', 'dodo-payments-for-woocommerce'),
+                        __('Checkout session created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
                         $response['session_id']
                     )
                 );
@@ -550,6 +536,7 @@ public function do_payment($order)
             $order->add_order_note(
                 __('Failed to create checkout session in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
             );
+            wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
             return array('result' => 'failure');
         }
     } else {
@@ -612,6 +599,7 @@ public function do_payment($order)
                 $order->add_order_note(
                     __('Failed to create subscription in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
                 );
+                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
                 return array('result' => 'failure');
             }
         } else {
@@ -635,6 +623,7 @@ public function do_payment($order)
                 $order->add_order_note(
                     __('Failed to create payment in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
                 );
+                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
                 return array('result' => 'failure');
             }
         }
@@ -778,12 +767,10 @@ private function handle_subscription_upgrade($order, $upgrade_meta)
         );
 
         // Store the pending plan change details for webhook processing
-        // The timestamp allows detecting stale entries if the webhook is delayed or missed
         $order->update_meta_data('_dodo_pending_plan_change', array(
             'dodo_subscription_id' => $dodo_subscription_id,
             'new_dodo_product_id'  => $new_dodo_product_id,
             'new_wc_product_id'    => $new_wc_product->get_id(),
-            'timestamp'            => current_time('mysql'),
             'order_id'             => $order->get_id(),
         ));
         $order->save();

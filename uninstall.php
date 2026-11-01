@@ -23,7 +23,7 @@ $tables = array(
 );
 
 foreach ($tables as $table) {
-    $wpdb->query("DROP TABLE IF EXISTS {$wpdb->prefix}{$table}"); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.DirectDatabaseQuery.NoCaching
+    $wpdb->query($wpdb->prepare("DROP TABLE IF EXISTS %i", $wpdb->prefix . $table)); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.DirectDatabaseQuery.NoCaching
 }
 
 delete_option('dodo_payments_flush_rewrite_rules');

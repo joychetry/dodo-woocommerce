@@ -1,5 +1,15 @@
 *** Dodo Payments for WooCommerce Changelog ***
 
+2026-11-01 - version 1.2.0
+* Feature: Support the WooCommerce Checkout block, including business purchase and tax ID fields
+* Change: Requires WordPress 7.1 and WooCommerce 11.0 or higher
+* Fix: Cart is emptied only after a successful payment, so failed payments can be retried
+* Fix: Overlay checkout only opens Dodo Payments checkout URLs
+* Fix: Subscription plan-change confirmations now complete the right upgrade order, even when the webhook arrives late
+* Fix: No fatal error when formatting a phone number before WooCommerce has loaded
+* Performance: Checkout scripts load deferred
+* Performance: Removed an extra orders query on every checkout page load
+
 2025-11-06 - version 0.4.0
 * Feature: Add Tax ID / VAT number collection support via Checkout Sessions API
 * Feature: New Checkout Sessions API integration for modern checkout experience

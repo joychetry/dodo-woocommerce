@@ -5,7 +5,7 @@
  * Plugin URI: https://dodopayments.com
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Dodo Payments
  * Developer: Dodo Payments
  * Text Domain: dodo-payments-for-woocommerce
@@ -14,19 +14,15 @@
  * License URI:       https://www.gnu.org/licenses/gpl-3.0.html
  *
  * Requires PHP: 7.4
- * Requires at least: 6.1
+ * Requires at least: 7.1
  * Requires Plugins: woocommerce
- * Tested up to: 6.9.1
- * WC requires at least: 7.9
- * WC tested up to: 10.5.2
+ * Tested up to: 7.1.4
+ * WC requires at least: 11.0
+ * WC tested up to: 11.2.1
  */
 
 if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
-}
-
-if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) {
-    return;
 }
 
 // Plugin path constants — single source of truth for paths and URLs.
@@ -78,9 +74,18 @@ register_activation_hook(__FILE__, function () {
 
 // Make the plugin HPOS compatible
 add_action('before_woocommerce_init', function () {
-    if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
-    }
+    \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+    \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__, true);
+});
+
+// Register Dodo Payments with the WooCommerce checkout block.
+add_action('woocommerce_blocks_loaded', function () {
+    require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-blocks.php';
+    add_action('woocommerce_blocks_payment_method_type_registration', function ($registry) {
+        $registry->register(new Dodo_Payments_Blocks());
+    });
+    add_action('woocommerce_init', array('Dodo_Payments_Blocks', 'register_b2b_fields'));
+    add_action('woocommerce_store_api_checkout_update_order_from_request', array('Dodo_Payments_Blocks', 'copy_b2b_fields_to_order'));
 });
 
 add_action('plugins_loaded', 'dodo_payments_init');

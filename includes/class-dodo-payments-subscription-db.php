@@ -128,7 +128,8 @@ class Dodo_Payments_Subscription_DB
     $table_name = self::get_table_name();
 
     $result = $wpdb->get_var($wpdb->prepare(
-      "SELECT dodo_subscription_id FROM $table_name WHERE wc_subscription_id = %d",
+      "SELECT dodo_subscription_id FROM %i WHERE wc_subscription_id = %d",
+      $table_name,
       $wc_subscription_id
     ));
 
@@ -152,7 +153,8 @@ class Dodo_Payments_Subscription_DB
     $table_name = self::get_table_name();
 
     $result = $wpdb->get_var($wpdb->prepare(
-      "SELECT wc_subscription_id FROM $table_name WHERE dodo_subscription_id = %s",
+      "SELECT wc_subscription_id FROM %i WHERE dodo_subscription_id = %s",
+      $table_name,
       $dodo_subscription_id
     ));
 

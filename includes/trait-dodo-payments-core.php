@@ -130,13 +130,7 @@ private function init_dodo_payments_api()
  */
 private function log_debug($message)
 {
-    if (function_exists('wc_get_logger')) {
-        $logger = wc_get_logger();
-        $logger->debug('Dodo Payments: ' . $message, array('source' => 'dodo-payments'));
-    } elseif (defined('WP_DEBUG') && WP_DEBUG) {
-        // Fallback to error log if WooCommerce logger is not available
-        error_log('Dodo Payments: ' . $message);
-    }
+    wc_get_logger()->debug('Dodo Payments: ' . $message, array('source' => 'dodo-payments'));
 }
 
 /**
