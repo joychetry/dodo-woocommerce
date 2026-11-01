@@ -373,6 +373,15 @@ class Dodo_Payments_API
 
         $res = $this->post('/checkouts', $request);
 
+        // The phone is optional, but Dodo rejects the whole session for a number that is well-formed
+        // yet not dialable (e.g. +15555555555). Retry without it so the customer can still pay.
+        if (!is_wp_error($res) && wp_remote_retrieve_response_code($res) === 400 && isset($request['customer']['phone_number'])
+            && str_contains(wp_remote_retrieve_body($res), 'phone_number')) {
+            $this->log_debug('Dodo rejected the billing phone for order #' . $order->get_id() . ', retrying the checkout session without it');
+            unset($request['customer']['phone_number']);
+            $res = $this->post('/checkouts', $request);
+        }
+
         if (is_wp_error($res)) {
             $error_msg = $res->get_error_message();
             $this->log_debug('API Error (checkouts): ' . $error_msg);
