@@ -1,5 +1,10 @@
 *** Dodo Payments for WooCommerce Changelog ***
 
+2026-11-01 - version 1.3.0
+* Feature: Inline checkout. With Checkout Display set to Inline, customers pay in a Dodo Payments form embedded in your order payment page, next to the order items, with Dodo's tax and totals; works with the classic checkout and the checkout block
+* Change: The "Enable Overlay Checkout" checkbox is now the Checkout Display setting (Redirect, Overlay or Inline); sites with the overlay on keep it
+* Change: The Dodo Payments checkout script is pinned to version 2.1.0 instead of always loading the latest release
+
 2026-11-01 - version 1.2.1
 * Fix: Invoice links keep working after Dodo Payments requires authentication for invoices (November 27, 2026): the plugin now downloads the invoice PDF with the API key and serves it only to the order's customer and shop managers, instead of linking to the deprecated public invoice_url
 * Fix: Overlay checkout on the classic checkout page opens again; the cart is now emptied after payment instead of before, so WooCommerce no longer sends the buyer to an empty cart

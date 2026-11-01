@@ -3,7 +3,7 @@ Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
 Requires at least: 7.1
 Tested up to: 7.1
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,11 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 1.3.0 =
+* Feature: Inline checkout. With Checkout Display set to Inline, customers pay in a Dodo Payments form embedded in your order payment page, next to the order items, with Dodo's tax and totals; works with the classic checkout and the checkout block
+* Change: The "Enable Overlay Checkout" checkbox is now the Checkout Display setting (Redirect, Overlay or Inline); sites with the overlay on keep it
+* Change: The Dodo Payments checkout script is pinned to version 2.1.0 instead of always loading the latest release
 
 = 1.2.1 =
 * Fix: Overlay checkout on the classic checkout page opens again; the cart is now emptied after payment instead of before, so WooCommerce no longer sends the buyer to an empty cart
