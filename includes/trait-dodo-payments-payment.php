@@ -34,7 +34,10 @@ public function process_payment($order_id)
     }
 
     $res = $this->do_payment($order);
-    WC()->cart->empty_cart();
+    // Keep the cart on failure so the buyer can fix the problem (e.g. a coupon) and retry.
+    if ('success' === ($res['result'] ?? '')) {
+        WC()->cart->empty_cart();
+    }
     return $res;
 }
 
