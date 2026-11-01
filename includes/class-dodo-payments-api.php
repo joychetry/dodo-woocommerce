@@ -1371,43 +1371,30 @@ class Dodo_Payments_API
     }
 
     /**
-     * Retrieves the invoice URL for a payment from the Dodo Payments API.
+     * Downloads the invoice PDF for a payment from the Dodo Payments API.
      *
-     * The invoice endpoint (get /invoices/payments/{payment_id}) returns a PDF binary,
-     * so instead we fetch the payment object and read its `invoice_url` field (added in
-     * Dodo API v1.75.0).
+     * The payment object's `invoice_url` is deprecated and needs authentication from
+     * 2026-11-27, so the PDF is fetched server-side with the API key and served by the plugin.
      *
      * @param string $payment_id The Dodo Payments payment ID.
-     * @return string|false The invoice URL if found, or false on error.
+     * @return string|false The PDF bytes, or false on error.
      */
-    public function get_payment_invoice($payment_id)
+    public function get_payment_invoice_pdf($payment_id)
     {
-        $res = $this->get("/payments/{$payment_id}");
+        $res = $this->get('/invoices/payments/' . rawurlencode($payment_id));
 
         if (is_wp_error($res)) {
-            $this->log_debug("Failed to get payment ($payment_id): " . $res->get_error_message());
+            $this->log_debug("Failed to get invoice for payment ($payment_id): " . $res->get_error_message());
             return false;
         }
 
         $response_code = wp_remote_retrieve_response_code($res);
         if ($response_code !== 200) {
-            $this->log_debug("Failed to get payment ($payment_id): HTTP $response_code");
+            $this->log_debug("Failed to get invoice for payment ($payment_id): HTTP $response_code");
             return false;
         }
 
-        $response_body = json_decode(wp_remote_retrieve_body($res), true);
-
-        if (!is_array($response_body)) {
-            $this->log_debug("Invalid JSON response for payment ($payment_id).");
-            return false;
-        }
-
-        if (isset($response_body['invoice_url'])) {
-            return $response_body['invoice_url'];
-        }
-
-        $this->log_debug("Payment response for ($payment_id) does not contain invoice_url: " . wc_print_r($response_body, true));
-        return false;
+        return wp_remote_retrieve_body($res);
     }
 
     /**

@@ -3,7 +3,7 @@
 /**
  * Dodo Payments Invoice Helper Class
  *
- * Handles invoice URL retrieval and caching for WooCommerce orders.
+ * Builds invoice links for WooCommerce orders and downloads their invoice PDFs.
  *
  * @since 0.5.0
  */
@@ -27,49 +27,40 @@ class Dodo_Payments_Invoice
     }
 
     /**
-     * Gets the invoice URL for a WooCommerce order.
+     * Gets the plugin URL that serves the invoice PDF for a WooCommerce order.
      *
-     * Checks order meta for cached invoice URL first, then retrieves from API if needed.
+     * Dodo's own invoice links need authentication, so customers and admins download the PDF
+     * through the plugin, which checks their access to the order and fetches it with the API key.
      *
      * @param WC_Order $order The WooCommerce order.
-     * @return string|false The invoice URL if found, or false on error.
+     * @return string|false The invoice URL, or false when the order has no paid Dodo payment.
      */
     public function get_invoice_url($order)
     {
-        // Check if invoice URL is already cached
-        $cached_url = $order->get_meta('_dodo_invoice_url');
-        if (!empty($cached_url)) {
-            return $cached_url;
-        }
-
-        // Get payment ID from order
-        $payment_id = $this->get_payment_id_from_order($order);
-        
-        if (!$payment_id) {
+        if (!$order->get_date_paid() || !$this->get_payment_id_from_order($order)) {
             return false;
         }
 
-        // Fetch invoice URL from API
-        $invoice_url = $this->dodo_payments_api->get_payment_invoice($payment_id);
-        
-        if ($invoice_url) {
-            // Cache the invoice URL in order meta
-            $order->update_meta_data('_dodo_invoice_url', $invoice_url);
-            $order->save();
-        }
-
-        return $invoice_url;
+        return add_query_arg(
+            array(
+                'action'   => 'dodo_payments_invoice',
+                'order_id' => $order->get_id(),
+            ),
+            admin_url('admin-post.php')
+        );
     }
 
     /**
-     * Gets invoice URL directly from payment ID.
+     * Downloads the invoice PDF for a WooCommerce order from Dodo Payments.
      *
-     * @param string $payment_id The Dodo Payments payment ID.
-     * @return string|false The invoice URL if found, or false on error.
+     * @param WC_Order $order The WooCommerce order.
+     * @return string|false The PDF bytes, or false on error.
      */
-    public function get_invoice_for_payment($payment_id)
+    public function get_invoice_pdf($order)
     {
-        return $this->dodo_payments_api->get_payment_invoice($payment_id);
+        $payment_id = $this->get_payment_id_from_order($order);
+
+        return $payment_id ? $this->dodo_payments_api->get_payment_invoice_pdf($payment_id) : false;
     }
 
     /**
