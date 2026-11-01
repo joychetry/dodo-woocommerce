@@ -39,9 +39,26 @@ public function process_payment($order_id)
     // (new order once the cart changes) reduces it again.
     if ('success' === ($res['result'] ?? '')) {
         wc_reduce_stock_levels($order_id);
-        WC()->cart->empty_cart();
+        // The overlay reopens on the checkout page, which WooCommerce redirects to the cart when
+        // the cart is empty. Core's wc_clear_cart_after_payment() empties it on order-received.
+        if (!$this->opens_overlay_checkout()) {
+            WC()->cart->empty_cart();
+        }
     }
     return $res;
+}
+
+/**
+ * Whether this checkout returns to the checkout page to open the Dodo overlay.
+ *
+ * Checkout block orders arrive via the Store API (REST) and the block empties the cart
+ * before the overlay page loads, so those always use a plain redirect instead.
+ *
+ * @return bool
+ */
+private function opens_overlay_checkout()
+{
+    return $this->enable_overlay_checkout && !WC()->is_rest_api_request();
 }
 
 /**
@@ -512,9 +529,7 @@ public function do_payment($order)
             $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
 
             // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
-            // Checkout block orders arrive via the Store API (REST) and the block empties the cart
-            // before the overlay page loads, so those always use a plain redirect instead.
-            if ($this->enable_overlay_checkout && !WC()->is_rest_api_request()) {
+            if ($this->opens_overlay_checkout()) {
                 $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
                 $order->save();
 
