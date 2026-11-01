@@ -24,12 +24,13 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 - Subscription products and recurring payments
 - Percentage based coupon codes
 - Classic Checkout Flow
+- Block based checkout (overlay checkout falls back to a redirect)
 - Payments from multiple countries
 - Product pricing in USD or INR
 
 == Does not Support ==
 
-- Block based checkout
+- "Purchasing as a business" / Tax ID fields on block checkout (classic checkout only)
 - Fixed amount or custom discount codes
 
 == Frequently Asked Questions ==

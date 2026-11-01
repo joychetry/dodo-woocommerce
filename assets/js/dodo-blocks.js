@@ -38,6 +38,6 @@
         canMakePayment: function () {
             return true;
         },
-        supports: { features: settings.supports || ['products'] }
+        supports: { features: settings.supports }
     });
 })(window.wc, window.wp);

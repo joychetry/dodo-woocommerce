@@ -51,16 +51,16 @@ final class Dodo_Payments_Blocks extends AbstractPaymentMethodType
 
     public function get_payment_method_data()
     {
-        $gateway = WC()->payment_gateways()->payment_gateways()[$this->name] ?? null;
+        $gateway = WC()->payment_gateways()->payment_gateways()[$this->name];
 
         return array(
             'title'       => $this->get_setting('title'),
             // Rendered as HTML in the block. get_description() applies kses and the
             // woocommerce_gateway_description filter like classic; wpautop() is skipped
             // because it inserts <br> between inline markup such as card icons.
-            'description' => $gateway ? $gateway->get_description() : wp_kses_post($this->get_setting('description')),
+            'description' => $gateway->get_description(),
             'icon'        => DODO_PAYMENTS_PLUGIN_URL . 'assets/logo.png',
-            'supports'    => $gateway ? array_values(array_filter($gateway->supports, array($gateway, 'supports'))) : array('products'),
+            'supports'    => array_values(array_filter($gateway->supports, array($gateway, 'supports'))),
         );
     }
 }
