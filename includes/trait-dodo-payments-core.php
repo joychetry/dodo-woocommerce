@@ -33,6 +33,9 @@ public function __construct()
         'subscription_cancellation',
         'subscription_suspension',
         'subscription_reactivation',
+        // Dodo bills renewals; stops WooCommerce Subscriptions from creating its own renewal
+        // order and putting the subscription on-hold (which would pause it in Dodo).
+        'gateway_scheduled_payments',
     );
 
     $this->enabled = $this->get_option('enabled');
