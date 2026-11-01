@@ -5,7 +5,7 @@
  * Plugin URI: https://dodopayments.com
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: Dodo Payments
  * Developer: Dodo Payments
  * Text Domain: dodo-payments-for-woocommerce
@@ -168,6 +168,64 @@ function dodo_payments_keep_trial_orders_pending($cancel, $order)
     }
 
     return $cancel;
+}
+
+/**
+ * Syncs WooCommerce Subscriptions and License Monks status changes to Dodo Payments.
+ *
+ * Registered at plugin level because gateways are instantiated lazily: requests such as
+ * cancelling an order from My Account (?cancel_order=true) never load them, so hooks added
+ * in the gateway constructor would miss the change and Dodo would keep charging.
+ *
+ * @since 1.2.1
+ */
+add_action('woocommerce_subscription_status_updated', 'dodo_payments_sync_subscription_status', 10, 3);
+function dodo_payments_sync_subscription_status($subscription, $new_status, $old_status)
+{
+    $gateway = dodo_payments_get_gateway_for($subscription);
+    if ($gateway) {
+        $gateway->handle_subscription_status_updated($subscription, $new_status, $old_status);
+    }
+}
+
+add_action('woocommerce_subscription_dates_updated', 'dodo_payments_sync_subscription_dates', 10, 2);
+function dodo_payments_sync_subscription_dates($subscription, $changed_dates)
+{
+    $gateway = dodo_payments_get_gateway_for($subscription);
+    if ($gateway) {
+        $gateway->handle_subscription_date_change($subscription, $changed_dates);
+    }
+}
+
+add_action('licensemonks/subscription/status/updated', 'dodo_payments_sync_lm_subscription_status', 10, 3);
+function dodo_payments_sync_lm_subscription_status($subscription, $new_status, $old_status)
+{
+    $gateway = dodo_payments_get_gateway_for($subscription);
+    if ($gateway) {
+        $gateway->handle_lm_subscription_status_updated($subscription, $new_status, $old_status);
+    }
+}
+
+/**
+ * Returns the gateway instance WooCommerce registered, if the subscription is paid with Dodo Payments.
+ *
+ * @since 1.2.1
+ * @param WC_Order $subscription
+ * @return Dodo_Payments_WC_Gateway|null
+ */
+function dodo_payments_get_gateway_for($subscription)
+{
+    // Check before loading gateways, so other payment methods pay nothing for this hook.
+    if (!$subscription || $subscription->get_payment_method() !== 'dodo_payments' || !function_exists('WC')) {
+        return null;
+    }
+
+    $gateway = WC()->payment_gateways()->payment_gateways()['dodo_payments'] ?? null;
+    if (!$gateway) {
+        wc_get_logger()->warning('Dodo Payments: gateway not found, subscription #' . $subscription->get_id() . ' change was not synced to Dodo Payments.', array('source' => 'dodo-payments'));
+    }
+
+    return $gateway;
 }
 
 /**

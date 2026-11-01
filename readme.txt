@@ -3,7 +3,7 @@ Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
 Requires at least: 7.1
 Tested up to: 7.1
-Stable tag: 1.2.0
+Stable tag: 1.2.1
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,14 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 1.2.1 =
+* Fix: Cancelling a subscription from My Account now also cancels it in Dodo Payments, so customers are no longer charged after a trial
+* Fix: A subscription cancelled before Dodo Payments activated it is cancelled in Dodo Payments on activation
+* Fix: Subscription changes made in wp-admin are no longer sent to Dodo Payments twice
+* Fix: A payment for a cancelled order or subscription puts the order on hold and emails the admin instead of completing it or creating a renewal
+* Fix: A redelivered payment webhook no longer moves a refunded order back to completed
+* Enhancement: Every handled webhook is logged with its type, webhook ID, payment, subscription and order IDs
 
 = 1.2.0 =
 * Feature: Support the WooCommerce Checkout block, including business purchase and tax ID fields

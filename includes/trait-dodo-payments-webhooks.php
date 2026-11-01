@@ -32,7 +32,7 @@ public function webhook()
     try {
         $webhook = new Dodo_Payments_Standard_Webhook($this->webhook_key);
     } catch (\Exception $e) {
-        $this->log_debug('Invalid webhook key: ' . $e->getMessage());
+        $this->log_debug('Invalid webhook key: ' . $e->getMessage() . ' (webhook-id: ' . $headers['webhook-id'] . ')');
         if ($this->testmode) {
             status_header(401);
         } else {
@@ -44,7 +44,7 @@ public function webhook()
     try {
         $payload = $webhook->verify($body, $headers);
     } catch (Exception $e) {
-        $this->log_debug('Could not verify webhook event: ' . $e->getMessage());
+        $this->log_debug('Could not verify webhook event: ' . $e->getMessage() . ' (webhook-id: ' . $headers['webhook-id'] . ', timestamp: ' . $headers['webhook-timestamp'] . ')');
         if ($this->testmode) {
             status_header(401);
         } else {
@@ -69,6 +69,15 @@ public function webhook()
 
     $kind = $type_parts[0];
     $status = $type_parts[1];
+
+    $this->log_debug(sprintf(
+        'Webhook received: %s (webhook-id: %s, payment_id: %s, subscription_id: %s, wc_order_id: %s)',
+        $type,
+        $headers['webhook-id'],
+        $payload['data']['payment_id'] ?? '-',
+        $payload['data']['subscription_id'] ?? '-',
+        $payload['data']['metadata']['wc_order_id'] ?? '-'
+    ));
 
     switch ($kind) {
         case 'payment':
@@ -214,6 +223,32 @@ private function handle_payment_webhook($payload, $status)
             }
             // ─── End trial guard ────────────────────────────────────────────────
 
+            // Redelivery of a payment already held for review, or already applied
+            // (a refunded order must not go back to completed).
+            if ($order->get_meta('_dodo_held_payment_id') === $payment_id
+                || ($order->get_transaction_id() === $payment_id && ($order->is_paid() || $order->has_status('refunded')))) {
+                $this->log_debug("payment.succeeded {$payment_id} already handled on order #{$order_id} (status: {$order->get_status()}), ignoring duplicate");
+                break;
+            }
+
+            // Charge on a subscription cancelled/expired in WooCommerce: alert the admin instead of fulfilling.
+            if (!empty($payload['data']['subscription_id'])) {
+                $mapped_sub_id = Dodo_Payments_Subscription_DB::get_wc_subscription_id($payload['data']['subscription_id']);
+                $mapped_sub = $mapped_sub_id ? wc_get_order($mapped_sub_id) : null;
+
+                if ($mapped_sub && $mapped_sub->has_status(array('cancelled', 'expired'))) {
+                    $this->hold_late_payment($order, $payment_id, $mapped_sub);
+                    break;
+                }
+            }
+
+            // Charge on a cancelled, never-paid order (e.g. auto-cancelled while the customer
+            // was still paying): put on-hold for review. Renewals on a paid parent are unaffected.
+            if ($order->has_status('cancelled') && !$order->get_date_paid()) {
+                $this->hold_late_payment($order, $payment_id);
+                break;
+            }
+
             // The parent's own charge is the one that set (or will set) its transaction id;
             // payment status is unreliable because a failed renewal also marks the parent failed.
             // Pin it in meta: payment_complete() on a failed parent overwrites the transaction id.
@@ -318,6 +353,59 @@ private function handle_payment_webhook($payload, $status)
 }
 
 /**
+ * Record a payment that arrived for a cancelled order or subscription, without fulfilling it,
+ * and email the admin to refund it or fulfil manually.
+ *
+ * A cancelled order is put on-hold. With a subscription, the referenced order is left as is
+ * (it is usually the already-paid parent) and no renewal order is created.
+ *
+ * @param WC_Order      $order        Order referenced by the payment.
+ * @param string        $payment_id   Dodo payment ID.
+ * @param WC_Order|null $subscription Cancelled/expired WooCommerce or License Monks subscription.
+ * @return void
+ */
+private function hold_late_payment($order, $payment_id, $subscription = null)
+{
+    $order->update_meta_data('_dodo_held_payment_id', $payment_id);
+
+    if ($subscription) {
+        $subject_id = $subscription->get_id();
+        $note = sprintf(
+            // translators: %1$s: Payment ID, %2$s: Subscription ID
+            __('Dodo Payments: payment %1$s succeeded for subscription #%2$s, which is cancelled in WooCommerce. No order was completed and no renewal order was created. Refund the payment and cancel the subscription in Dodo Payments.', 'dodo-payments-for-woocommerce'),
+            $payment_id,
+            $subject_id
+        );
+        // translators: %1$s: Subscription ID
+        $subject = __('[Action needed] Payment received for cancelled subscription #%1$s', 'dodo-payments-for-woocommerce');
+        $subscription->add_order_note($note);
+        $order->save();
+        if ($order->get_id() !== $subject_id) {
+            $order->add_order_note($note);
+        }
+    } else {
+        $subject_id = $order->get_order_number();
+        $note = sprintf(
+            // translators: %1$s: Payment ID
+            __('Dodo Payments: payment %1$s succeeded for an order that was already cancelled. The order was NOT completed. Refund the payment in Dodo Payments, or fulfil the order manually.', 'dodo-payments-for-woocommerce'),
+            $payment_id
+        );
+        // translators: %1$s: Order number
+        $subject = __('[Action needed] Payment received for cancelled order #%1$s', 'dodo-payments-for-woocommerce');
+        $order->set_transaction_id($payment_id);
+        $order->update_status('on-hold', $note); // Saves the order, including the meta above.
+    }
+
+    $this->log_debug("payment.succeeded {$payment_id} held for review on order #{$order->get_id()}" . ($subscription ? " (cancelled subscription #{$subject_id})" : ' (cancelled order)'));
+
+    $admin_email = get_option('admin_email');
+    if ($admin_email) {
+        // translators: %1$s: Order number or subscription ID
+        wp_mail($admin_email, sprintf($subject, $subject_id), $note . "\n\n" . $order->get_edit_order_url());
+    }
+}
+
+/**
  * Handle refund webhook events
  *
  * @param array $payload
@@ -410,7 +498,19 @@ private function handle_subscription_webhook($payload, $status)
     }
 
     $subscription = wc_get_order($wc_subscription_id);
-    
+
+    // Cancelled in WooCommerce before Dodo's first webhook linked the subscription, so the
+    // cancellation could not be synced then. Do it now instead of reactivating.
+    if ('active' === $status && $subscription && $subscription->has_status(array('cancelled', 'expired'))) {
+        $subscription->add_order_note(__('Dodo Payments: subscription became active in Dodo Payments but is cancelled in WooCommerce. Cancelling it in Dodo Payments.', 'dodo-payments-for-woocommerce'));
+        if ($subscription->get_type() === 'lm_subscription') {
+            $this->cancel_lm_subscription($subscription);
+        } else {
+            $this->cancel_subscription($subscription);
+        }
+        return;
+    }
+
     if ($subscription && $subscription->get_type() === 'lm_subscription') {
         $this->handle_lm_subscription_webhook_event($subscription, $status, $payload);
         return;

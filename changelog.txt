@@ -1,5 +1,13 @@
 *** Dodo Payments for WooCommerce Changelog ***
 
+2026-11-01 - version 1.2.1
+* Fix: Cancelling a subscription from My Account now also cancels it in Dodo Payments, so customers are no longer charged after a trial
+* Fix: A subscription cancelled before Dodo Payments activated it is cancelled in Dodo Payments on activation
+* Fix: Subscription changes made in wp-admin are no longer sent to Dodo Payments twice
+* Fix: A payment for a cancelled order or subscription puts the order on hold and emails the admin instead of completing it or creating a renewal
+* Fix: A redelivered payment webhook no longer moves a refunded order back to completed
+* Enhancement: Every handled webhook is logged with its type, webhook ID, payment, subscription and order IDs
+
 2026-11-01 - version 1.2.0
 * Feature: Support the WooCommerce Checkout block, including business purchase and tax ID fields
 * Change: Requires WordPress 7.1 and WooCommerce 11.0 or higher
