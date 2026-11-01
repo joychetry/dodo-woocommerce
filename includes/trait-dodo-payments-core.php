@@ -69,7 +69,6 @@ public function __construct()
 
     // Invoice display in My Account
     add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
-    add_action('init', array($this, 'add_invoice_endpoint'));
     add_action('init', array($this, 'maybe_flush_rewrite_rules'));
 
     // Invoice display in My Account orders table (frontend for customers) is registered at

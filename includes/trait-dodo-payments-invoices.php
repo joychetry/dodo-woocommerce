@@ -1,6 +1,6 @@
 <?php
 /**
- * Invoice display: My Account invoice endpoint, admin order columns (HPOS + legacy), and invoice links.
+ * Invoice display: PDF download handler, admin order columns (HPOS + legacy), and invoice links.
  *
  * @package Dodo_Payments_For_WooCommerce
  */
@@ -10,18 +10,12 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Invoice display: My Account invoice endpoint, admin order columns (HPOS + legacy), and invoice links.
+ * Invoice display: PDF download handler, admin order columns (HPOS + legacy), and invoice links.
  *
  * @since 0.7.0
  */
 trait DodoPaymentsInvoices
 {
-
-public function add_invoice_endpoint()
-{
-    add_rewrite_endpoint('view-invoice', EP_ROOT | EP_PAGES);
-    add_action('woocommerce_account_view-invoice_endpoint', array($this, 'view_invoice_endpoint_content'));
-}
 
 /**
  * Flushes rewrite rules if flagged on plugin activation
@@ -76,58 +70,36 @@ public function display_invoice_link($order)
 }
 
 /**
- * Handles the view-invoice endpoint content
+ * Streams the invoice PDF for an order (admin-post.php?action=dodo_payments_invoice&order_id=N).
+ *
+ * Runs for any logged-in user: customers may download invoices for their own orders,
+ * shop managers for any order.
  *
  * @return void
- * @since 0.5.0
+ * @since 1.2.1
  */
-public function view_invoice_endpoint_content()
+public function download_invoice()
 {
-    global $wp;
-    
-    // Get order ID from query var
-    $order_id = isset($wp->query_vars['view-invoice']) ? absint($wp->query_vars['view-invoice']) : 0;
-    
-    if (!$order_id) {
-        wc_add_notice(__('Invalid order ID.', 'dodo-payments-for-woocommerce'), 'error');
-        wp_safe_redirect(wc_get_page_permalink('myaccount'));
-        exit;
+    $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+    $order = $order_id ? wc_get_order($order_id) : false;
+
+    if (!$order instanceof WC_Order || $order->get_payment_method() !== $this->id
+        || !(current_user_can('view_order', $order_id) || current_user_can('edit_shop_orders'))) {
+        wp_die(esc_html__('Invoice not found.', 'dodo-payments-for-woocommerce'), '', array('response' => 404));
     }
 
-    $order = wc_get_order($order_id);
-
-    if (!$order) {
-        wc_add_notice(__('Order not found.', 'dodo-payments-for-woocommerce'), 'error');
-        wp_safe_redirect(wc_get_page_permalink('myaccount'));
-        exit;
-    }
-
-    // Verify user owns the order
-    if (!current_user_can('view_order', $order_id)) {
-        wc_add_notice(__('You do not have permission to view this invoice.', 'dodo-payments-for-woocommerce'), 'error');
-        wp_safe_redirect(wc_get_page_permalink('myaccount'));
-        exit;
-    }
-
-    // Only allow for Dodo Payments orders
-    if ($order->get_payment_method() !== $this->id) {
-        wc_add_notice(__('This order does not use Dodo Payments.', 'dodo-payments-for-woocommerce'), 'error');
-        wp_safe_redirect(wc_get_account_endpoint_url('orders'));
-        exit;
-    }
-
-    // Get invoice URL
     $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
-    $invoice_url = $invoice_helper->get_invoice_url($order);
+    $pdf = $invoice_helper->get_invoice_pdf($order);
 
-    if (!$invoice_url) {
-        wc_add_notice(__('Invoice not available for this order.', 'dodo-payments-for-woocommerce'), 'error');
-        wp_safe_redirect($order->get_view_order_url());
-        exit;
+    if (!$pdf) {
+        wp_die(esc_html__('The invoice is not available yet. Please try again later.', 'dodo-payments-for-woocommerce'), '', array('response' => 502));
     }
 
-    // Redirect to invoice URL
-    wp_safe_redirect($invoice_url);
+    nocache_headers();
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="invoice-' . $order->get_order_number() . '.pdf"');
+    header('Content-Length: ' . strlen($pdf));
+    echo $pdf; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary PDF.
     exit;
 }
 
@@ -193,6 +165,9 @@ public function add_admin_invoice_hooks()
     if (!is_admin()) {
         return;
     }
+
+    // Invoice PDF download for customers and admins (admin-post.php runs admin_init for any logged-in user).
+    add_action('admin_post_dodo_payments_invoice', array($this, 'download_invoice'));
 
     // Invoice is exposed via the Actions column button below; no dedicated column.
 
