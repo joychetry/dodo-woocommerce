@@ -17,7 +17,7 @@
  * Requires at least: 6.1
  * Requires Plugins: woocommerce
  * Tested up to: 7.1.4
- * WC requires at least: 7.9
+ * WC requires at least: 11.0
  * WC tested up to: 11.2.1
  */
 
@@ -78,17 +78,12 @@ register_activation_hook(__FILE__, function () {
 
 // Make the plugin HPOS compatible
 add_action('before_woocommerce_init', function () {
-    if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__, true);
-    }
+    \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+    \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__, true);
 });
 
 // Register Dodo Payments with the WooCommerce checkout block.
 add_action('woocommerce_blocks_loaded', function () {
-    if (!class_exists(\Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType::class)) {
-        return;
-    }
     require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-blocks.php';
     add_action('woocommerce_blocks_payment_method_type_registration', function ($registry) {
         $registry->register(new Dodo_Payments_Blocks());

@@ -21,9 +21,9 @@ public function process_payment($order_id)
 {
     $order = wc_get_order($order_id);
     $order->update_status('pending-payment', __('Awaiting payment via Dodo Payments', 'dodo-payments-for-woocommerce'));
-    wc_reduce_stock_levels($order_id);
 
     if ($order->get_total() == 0) {
+        wc_reduce_stock_levels($order_id);
         $order->payment_complete();
 
         WC()->cart->empty_cart();
@@ -35,7 +35,10 @@ public function process_payment($order_id)
 
     $res = $this->do_payment($order);
     // Keep the cart on failure so the buyer can fix the problem (e.g. a coupon) and retry.
+    // Stock too: a failed attempt left pending would otherwise hold it while the retry
+    // (new order once the cart changes) reduces it again.
     if ('success' === ($res['result'] ?? '')) {
+        wc_reduce_stock_levels($order_id);
         WC()->cart->empty_cart();
     }
     return $res;
@@ -555,6 +558,7 @@ public function do_payment($order)
             $order->add_order_note(
                 __('Failed to create checkout session in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
             );
+            wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
             return array('result' => 'failure');
         }
     } else {
@@ -617,6 +621,7 @@ public function do_payment($order)
                 $order->add_order_note(
                     __('Failed to create subscription in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
                 );
+                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
                 return array('result' => 'failure');
             }
         } else {
@@ -640,6 +645,7 @@ public function do_payment($order)
                 $order->add_order_note(
                     __('Failed to create payment in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
                 );
+                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
                 return array('result' => 'failure');
             }
         }
