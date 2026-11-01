@@ -266,7 +266,19 @@ public function capture_payment_id_from_return()
     if (!$order || $order->get_payment_method() !== $this->id) {
         return;
     }
-    
+
+    // Declined or abandoned at Dodo: send the customer back to pay instead of a "thank you" page.
+    $return_status = isset($_GET['status']) ? sanitize_key(wp_unslash($_GET['status'])) : '';
+    $order_key = isset($_GET['key']) ? sanitize_text_field(wp_unslash($_GET['key'])) : '';
+    if (in_array($return_status, array('failed', 'cancelled'), true)
+        && $order->key_is_valid($order_key)
+        && !$order->is_paid()
+        && $order->needs_payment()) {
+        // A query flag, not wc_add_notice(): the pay-for-order page does not print queued notices.
+        wp_safe_redirect(add_query_arg('dodo_payment_failed', '1', $order->get_checkout_payment_url()));
+        exit;
+    }
+
     // Check if this was a checkout session order (has session_id stored)
     $session_id = $order->get_meta('_dodo_checkout_session_id');
     
@@ -649,64 +661,59 @@ private function handle_subscription_upgrade($order, $upgrade_meta)
         // Look up WC subscription from original order via license
         $dodo_subscription_id = null;
 
-        if (class_exists('LicenseMonks_License_Generator') && function_exists('wcs_get_subscriptions_for_order')) {
-            $license = LicenseMonks_License_Generator::get_license($license_id);
+        if (!class_exists('LicenseMonks_License_Generator')) {
+            throw new Exception(__('License Monks plugin is not active.', 'dodo-payments-for-woocommerce'));
+        }
 
-            if (!$license) {
-                throw new Exception(sprintf(
-                    /* translators: %d: License ID */
-                    __('License not found. License ID: %d', 'dodo-payments-for-woocommerce'),
-                    $license_id
-                ));
-            }
+        $license = LicenseMonks_License_Generator::get_license($license_id);
 
-            if (empty($license->order_id)) {
-                throw new Exception(sprintf(
-                    /* translators: %d: License ID */
-                    __('License has no associated order. License ID: %d', 'dodo-payments-for-woocommerce'),
-                    $license_id
-                ));
-            }
+        if (!$license) {
+            throw new Exception(sprintf(
+                /* translators: %d: License ID */
+                __('License not found. License ID: %d', 'dodo-payments-for-woocommerce'),
+                $license_id
+            ));
+        }
 
-            // Verify license ownership - ensure current user owns this license
-            $license_user_id = isset($license->user_id) ? absint($license->user_id) : 0;
-            $current_user_id = get_current_user_id();
+        if (empty($license->order_id)) {
+            throw new Exception(sprintf(
+                /* translators: %d: License ID */
+                __('License has no associated order. License ID: %d', 'dodo-payments-for-woocommerce'),
+                $license_id
+            ));
+        }
 
-            if ($license_user_id > 0 && $current_user_id > 0 && $license_user_id !== $current_user_id) {
-                // Check if current user has capability to upgrade licenses (e.g., shop manager)
-                if (!current_user_can('manage_woocommerce')) {
-                    throw new Exception(__('You do not have permission to upgrade this license.', 'dodo-payments-for-woocommerce'));
-                }
-            }
+        // Verify license ownership - ensure current user owns this license
+        $license_user_id = isset($license->user_id) ? absint($license->user_id) : 0;
+        $current_user_id = get_current_user_id();
 
-            $subscriptions = wcs_get_subscriptions_for_order($license->order_id);
-            if (empty($subscriptions)) {
-                throw new Exception(sprintf(
-                    /* translators: %1$d: License ID, %2$d: Order ID */
-                    __('No subscription found for license. License ID: %1$d, Order ID: %2$d', 'dodo-payments-for-woocommerce'),
-                    $license_id,
-                    $license->order_id
-                ));
+        if ($license_user_id > 0 && $current_user_id > 0 && $license_user_id !== $current_user_id) {
+            // Check if current user has capability to upgrade licenses (e.g., shop manager)
+            if (!current_user_can('manage_woocommerce')) {
+                throw new Exception(__('You do not have permission to upgrade this license.', 'dodo-payments-for-woocommerce'));
             }
+        }
 
-            $subscription = reset($subscriptions);
-            $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+        // WooCommerce Subscriptions or License Monks subscription of the license's order.
+        $wc_subscription_id = !empty($license->subscription_id) ? absint($license->subscription_id) : $this->find_subscription_id_from_order($license->order_id);
+        if (!$wc_subscription_id) {
+            throw new Exception(sprintf(
+                /* translators: %1$d: License ID, %2$d: Order ID */
+                __('No subscription found for license. License ID: %1$d, Order ID: %2$d', 'dodo-payments-for-woocommerce'),
+                $license_id,
+                $license->order_id
+            ));
+        }
 
-            if (!$dodo_subscription_id) {
-                throw new Exception(sprintf(
-                    /* translators: %1$d: License ID, %2$d: Subscription ID */
-                    __('No Dodo subscription mapping found. License ID: %1$d, WC Subscription ID: %2$d', 'dodo-payments-for-woocommerce'),
-                    $license_id,
-                    $subscription->get_id()
-                ));
-            }
-        } else {
-            if (!class_exists('LicenseMonks_License_Generator')) {
-                throw new Exception(__('License Monks plugin is not active.', 'dodo-payments-for-woocommerce'));
-            }
-            if (!function_exists('wcs_get_subscriptions_for_order')) {
-                throw new Exception(__('WooCommerce Subscriptions is not active.', 'dodo-payments-for-woocommerce'));
-            }
+        $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($wc_subscription_id);
+
+        if (!$dodo_subscription_id) {
+            throw new Exception(sprintf(
+                /* translators: %1$d: License ID, %2$d: Subscription ID */
+                __('No Dodo subscription mapping found. License ID: %1$d, WC Subscription ID: %2$d', 'dodo-payments-for-woocommerce'),
+                $license_id,
+                $wc_subscription_id
+            ));
         }
 
         // Get the new product from the order
@@ -721,6 +728,12 @@ private function handle_subscription_upgrade($order, $upgrade_meta)
         }
 
         $new_dodo_product_id = Dodo_Payments_Product_DB::get_dodo_product_id($new_wc_product->get_id());
+
+        // Stale mapping (deleted in Dodo, or created in the other mode): recreate, as sync_products() does.
+        if ($new_dodo_product_id && !$this->dodo_payments_api->get_product($new_dodo_product_id)) {
+            Dodo_Payments_Product_DB::delete_mapping($new_wc_product->get_id());
+            $new_dodo_product_id = null;
+        }
 
         // If new product isn't mapped to Dodo yet, create it
         if (!$new_dodo_product_id) {

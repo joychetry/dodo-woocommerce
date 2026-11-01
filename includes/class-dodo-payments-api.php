@@ -503,6 +503,7 @@ class Dodo_Payments_API
             'discount_code' => $dodo_discount_code,
             'payment_link' => true,
             'return_url' => $return_url,
+            'metadata' => array('wc_order_id' => (string) $order->get_id()),
         );
 
         $res = $this->post('/payments', $request);
@@ -1085,6 +1086,8 @@ class Dodo_Payments_API
             'billing_currency' => get_woocommerce_currency(),
             'product_id' => $first_product['product_id'],
             'quantity' => $first_product['quantity'],
+            // Lets webhooks (including renewal charges) find the order, as in checkout sessions.
+            'metadata' => array('wc_order_id' => (string) $order->get_id()),
         );
 
         // Add discount if provided

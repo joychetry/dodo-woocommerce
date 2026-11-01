@@ -49,6 +49,16 @@ Currently, we support credit card payments through Dodo Payment Gateway.
 * Fix: Subscription changes made in wp-admin are no longer sent to Dodo Payments twice
 * Fix: A payment for a cancelled order or subscription emails the admin instead of completing the order or creating a renewal
 * Fix: A redelivered payment webhook no longer moves a refunded order back to completed
+* Fix: Renewal charges on the legacy (non Checkout Sessions) flow are recorded, so License Monks licenses are extended instead of expiring while the customer is still billed
+* Fix: Legacy payments and subscriptions send the WooCommerce order ID to Dodo Payments, so their webhooks always find the order
+* Fix: A failed, cancelled or processing payment event no longer changes a paid order, so a failed renewal or a late retry no longer fails the parent order or puts the subscription on hold
+* Fix: Refunds are recorded on the order that holds the payment, with the refunded amount: a renewal refund no longer refunds the parent order (which cancelled the subscription), and partial refunds stay partial
+* Fix: A customer whose payment is declined or abandoned returns to the pay-for-order page with an error, instead of a "thank you" page
+* Fix: The payment ID is captured from the return URL again: the return handler did not run because gateways are not loaded on the order-received page
+* Fix: License Monks subscription upgrades no longer fail with "WooCommerce Subscriptions is not active"
+* Fix: Upgrades recreate a Dodo product whose mapping is stale, instead of failing with a 404
+* Fix: The charge for a plan change completes its upgrade order instead of creating a renewal order and extending the subscription
+* Fix: The License Monks "trial ended" note shows the subscription ID
 * Enhancement: Every handled webhook is logged with its type, webhook ID, payment, subscription and order IDs
 
 = 1.2.0 =

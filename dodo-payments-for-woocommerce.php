@@ -194,6 +194,26 @@ foreach (array(
 unset($dodo_payments_hook, $dodo_payments_method);
 
 /**
+ * Loads the gateways on the order-received page, so the gateway's return handler
+ * (capture_payment_id_from_return, template_redirect priority 10) runs there:
+ * WooCommerce does not instantiate gateways on that page by itself.
+ *
+ * @since 1.2.1
+ */
+add_action('template_redirect', function () {
+    if (function_exists('is_wc_endpoint_url') && is_wc_endpoint_url('order-received')) {
+        WC()->payment_gateways();
+    }
+}, 9);
+
+// Shown on the pay-for-order page after a declined or abandoned Dodo payment (see capture_payment_id_from_return).
+add_action('before_woocommerce_pay', function () {
+    if (!empty($_GET['dodo_payment_failed'])) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display only.
+        wc_print_notice(__('Your payment was not completed. Please try again or use a different payment method.', 'dodo-payments-for-woocommerce'), 'error');
+    }
+});
+
+/**
  * Returns the gateway instance WooCommerce registered, if the subscription is paid with Dodo Payments.
  *
  * @since 1.2.1
