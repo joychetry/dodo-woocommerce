@@ -198,6 +198,12 @@ private function handle_payment_webhook($payload, $status)
                 ? (int) $payload['data']['total_amount']
                 : 0;
 
+            // A $0 payment on a paid order is a card update, not a trial signup.
+            if ($payment_amount === 0 && isset($payload['data']['subscription_id']) && $order->is_paid()) {
+                $this->log_debug("Zero-amount payment {$payment_id} on paid order #{$order_id} (payment method update), nothing to do");
+                break;
+            }
+
             if ($payment_amount === 0 && isset($payload['data']['subscription_id'])) {
                 $sub_id = $payload['data']['subscription_id'];
                 // The mandate can arrive before the subscription mapping is saved; the trial flag must still be set.

@@ -41,6 +41,10 @@ public function handle_lm_subscription_status_updated($subscription, $new_status
     // Strip wc- prefix if present for uniform matching
     $new_status = str_starts_with($new_status, 'wc-') ? substr($new_status, 3) : $new_status;
 
+    if ($this->is_dodo_status_echo($new_status)) {
+        return null;
+    }
+
     switch ($new_status) {
         case 'on-hold':
             $this->suspend_lm_subscription($subscription);
@@ -56,6 +60,18 @@ public function handle_lm_subscription_status_updated($subscription, $new_status
             }
             break;
     }
+}
+
+/**
+ * Whether a hold or reactivation is being applied from a Dodo webhook, so it must not be sent back.
+ *
+ * Sending it back races Dodo: after a failed charge Dodo still reports "active" for a moment, and
+ * pausing it then turns its on_hold (customer can pay the dues) into paused. Cancellations still
+ * go through: the webhook handler relies on them to resend a cancellation Dodo missed.
+ */
+private function is_dodo_status_echo($new_status)
+{
+    return in_array($new_status, array('on-hold', 'active'), true) && doing_action('woocommerce_api_' . $this->id);
 }
 
 private function suspend_lm_subscription($subscription)
@@ -155,6 +171,10 @@ private function reactivate_lm_subscription($subscription)
  */
 public function handle_subscription_status_updated($subscription, $new_status, $old_status)
 {
+    if ($this->is_dodo_status_echo($new_status)) {
+        return null;
+    }
+
     switch ($new_status) {
         case 'on-hold':
             $this->suspend_subscription($subscription);
