@@ -66,54 +66,33 @@ public function enqueue_overlay_checkout_scripts()
     
     // Priority 1: Check URL parameter (for redirect back to checkout)
     if (isset($_GET['dodo_checkout_session_url'])) {
-        $checkout_session_url = sanitize_text_field(wp_unslash($_GET['dodo_checkout_session_url']));
-        // Store in session for persistence
-        if ($checkout_session_url && WC()->session) {
+        $url = esc_url_raw(wp_unslash($_GET['dodo_checkout_session_url']), array('https'));
+        $host = (string) wp_parse_url($url, PHP_URL_HOST);
+        // Only Dodo-hosted checkout pages may be opened in the overlay.
+        if ('dodopayments.com' === $host || str_ends_with($host, '.dodopayments.com')) {
+            $checkout_session_url = $url;
             WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
         }
     }
-    
+
     // Priority 2: Check WooCommerce session (stored during payment processing)
-    if (!$checkout_session_url && WC()->session) {
+    if (!$checkout_session_url) {
         $checkout_session_url = WC()->session->get('dodo_checkout_session_url');
     }
-    
+
     // Priority 3: Try to get from order being processed
-    if (!$checkout_session_url && WC()->session && WC()->session->get('order_awaiting_payment')) {
-        $order_id = WC()->session->get('order_awaiting_payment');
-        $order = wc_get_order($order_id);
+    if (!$checkout_session_url && WC()->session->get('order_awaiting_payment')) {
+        $order = wc_get_order(WC()->session->get('order_awaiting_payment'));
         if ($order && $order->get_payment_method() === $this->id) {
             $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
             // Store in session for next page load
-            if ($checkout_session_url && WC()->session) {
-                WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
-            }
-        }
-    }
-    
-    // Priority 4: Check recent orders for this user (fallback)
-    if (!$checkout_session_url && is_user_logged_in()) {
-        $recent_orders = wc_get_orders(array(
-            'customer' => get_current_user_id(),
-            'limit' => 1,
-            'orderby' => 'date',
-            'order' => 'DESC',
-            'payment_method' => $this->id,
-            'status' => 'pending',
-        ));
-        
-        if (!empty($recent_orders)) {
-            $order = reset($recent_orders);
-            $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
-            // Store in session for next page load
-            if ($checkout_session_url && WC()->session) {
+            if ($checkout_session_url) {
                 WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
             }
         }
     }
 
     if (!$checkout_session_url) {
-        $this->log_debug('Overlay checkout script not enqueued - no checkout session URL found');
         return; // No checkout session URL available
     }
 
@@ -788,12 +767,10 @@ private function handle_subscription_upgrade($order, $upgrade_meta)
         );
 
         // Store the pending plan change details for webhook processing
-        // The timestamp allows detecting stale entries if the webhook is delayed or missed
         $order->update_meta_data('_dodo_pending_plan_change', array(
             'dodo_subscription_id' => $dodo_subscription_id,
             'new_dodo_product_id'  => $new_dodo_product_id,
             'new_wc_product_id'    => $new_wc_product->get_id(),
-            'timestamp'            => current_time('mysql'),
             'order_id'             => $order->get_id(),
         ));
         $order->save();

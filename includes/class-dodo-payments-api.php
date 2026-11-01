@@ -428,7 +428,8 @@ class Dodo_Payments_API
         }
 
         $country = $order->get_billing_country();
-        if (empty($country)) {
+        // WC()->countries is only set once WooCommerce has initialised.
+        if (empty($country) || !WC()->countries) {
             return '';
         }
 

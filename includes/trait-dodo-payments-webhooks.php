@@ -549,9 +549,9 @@ private function handle_plan_changed_webhook($payload, $subscription)
         return;
     }
 
-    // Find orders with pending plan changes for this subscription
+    // Pending change is a serialized array, so fetch all and match the subscription below (newest first).
     $args = array(
-        'limit'  => 1,
+        'limit'  => -1,
         'type'   => 'shop_order',
         'status' => array('pending', 'on-hold'),
         'meta_query' => array(
@@ -573,18 +573,6 @@ private function handle_plan_changed_webhook($payload, $subscription)
 
         // Verify this order is for the same subscription that changed
         if (isset($pending_change['dodo_subscription_id']) && $pending_change['dodo_subscription_id'] === $dodo_subscription_id) {
-            // Validate the pending change isn't stale (older than 1 hour)
-            $timestamp = $pending_change['timestamp'] ?? '';
-            if (!empty($timestamp)) {
-                // Stored as site-local time via current_time('mysql').
-                if ((int) get_gmt_from_date($timestamp, 'U') < time() - HOUR_IN_SECONDS) {
-                    $this->log_debug('Stale plan change detected for order #' . $order->get_id() . ', skipping');
-                    $order->delete_meta_data('_dodo_pending_plan_change');
-                    $order->save();
-                    continue;
-                }
-            }
-
             // Verify the new product ID matches what Dodo confirmed
             $new_product_id = $payload['data']['product_id'] ?? '';
             if (!empty($new_product_id) && isset($pending_change['new_dodo_product_id']) && $pending_change['new_dodo_product_id'] !== $new_product_id) {
