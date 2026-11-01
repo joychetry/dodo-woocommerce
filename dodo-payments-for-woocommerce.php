@@ -245,7 +245,8 @@ add_filter('woocommerce_my_account_my_orders_actions', function ($actions, $orde
  */
 function dodo_payments_get_trial_subscription($order)
 {
-    if ($order->get_payment_method() !== 'dodo_payments' || $order->is_paid()) {
+    // Only pending: a failed order means the charge at trial end was declined.
+    if ($order->get_payment_method() !== 'dodo_payments' || !$order->has_status('pending')) {
         return null;
     }
     foreach ($order->get_items() as $item) {

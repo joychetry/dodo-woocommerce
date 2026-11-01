@@ -21,6 +21,8 @@
 * Feature: Customers on a free trial can end it early and pay now from My Account (the order's Pay button becomes "End trial & pay now"); the card saved at signup is charged on the existing Dodo subscription
 * Fix: Paying a free-trial order no longer starts a second Dodo subscription with a new trial (which also re-linked the WooCommerce subscription to the new, unpaid one)
 * Fix: The first charge after a free trial completes the order and starts the first paid period from the charge date, instead of also creating a renewal order and sending a renewal email
+* Fix: Paying an order whose trial-end charge was declined opens Dodo's "pay pending dues" page for the existing subscription, instead of starting a new subscription with another free trial
+* Fix: Putting a subscription on hold or reactivating it in WooCommerce now pauses and resumes it in Dodo Payments (both requests were rejected by Dodo), and changes that came from Dodo are no longer sent back to it
 * Fix: The License Monks "trial ended" note shows the subscription ID
 * Enhancement: Every handled webhook is logged with its type, webhook ID, payment, subscription and order IDs
 

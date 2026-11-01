@@ -1218,6 +1218,36 @@ class Dodo_Payments_API
     }
 
     /**
+     * Creates a Dodo-hosted link where the customer adds a new card for a subscription.
+     *
+     * For an on_hold subscription the page charges the overdue amount ("Pay pending dues"),
+     * which reactivates it.
+     *
+     * @param string $dodo_subscription_id The Dodo subscription ID.
+     * @param string $return_url           Where Dodo sends the customer afterwards.
+     * @return string Payment link.
+     * @throws \Exception If the API request fails.
+     */
+    public function create_payment_method_update_link($dodo_subscription_id, $return_url)
+    {
+        $res = $this->post(
+            "/subscriptions/{$dodo_subscription_id}/update-payment-method",
+            array('type' => 'new', 'return_url' => $return_url)
+        );
+
+        if (is_wp_error($res)) {
+            throw new Exception('Failed to create payment method update link: ' . esc_html($res->get_error_message()));
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($res), true);
+        if (wp_remote_retrieve_response_code($res) !== 200 || empty($body['payment_link'])) {
+            throw new Exception('Failed to create payment method update link: ' . esc_html(wp_remote_retrieve_body($res)));
+        }
+
+        return $body['payment_link'];
+    }
+
+    /**
      * Cancels a subscription immediately in the Dodo Payments API.
      *
      * Sets the subscription status to 'cancelled' via the API. Throws an exception if the operation fails.
@@ -1272,18 +1302,22 @@ class Dodo_Payments_API
     /**
      * Pauses an active subscription in the Dodo Payments API.
      *
-     * Sets the subscription status to 'on_hold' for the specified subscription ID. Throws an exception if the API request fails.
+     * Only an active subscription is paused: one Dodo already put on hold (failed payment),
+     * paused or ended is left alone, so a change that came from a Dodo webhook is not sent back.
      *
      * @param string $dodo_subscription_id The ID of the subscription to pause.
+     * @return bool True if the subscription was paused.
      * @throws \Exception If the API request fails or returns an error response.
      */
     public function pause_subscription($dodo_subscription_id)
     {
-        $body = array(
-            'status' => 'on_hold'
-        );
+        $current = $this->get_subscription($dodo_subscription_id);
+        if (!$current || ($current['status'] ?? '') !== 'active') {
+            return false;
+        }
 
-        $res = $this->patch("/subscriptions/{$dodo_subscription_id}", $body);
+        // Dodo only accepts status "paused" from the merchant, sent on its own.
+        $res = $this->patch("/subscriptions/{$dodo_subscription_id}", array('status' => 'paused'));
 
         if (is_wp_error($res)) {
             throw new Exception("Failed to pause subscription: " . esc_html($res->get_error_message()));
@@ -1293,23 +1327,28 @@ class Dodo_Payments_API
             throw new Exception("Failed to pause subscription: " . esc_html($res['body']));
         }
 
-        return;
+        return true;
     }
 
     /**
-     * Resumes a paused subscription in the Dodo Payments API by setting its status to active and clearing any pending cancellation.
+     * Resumes a paused subscription in the Dodo Payments API.
+     *
+     * Only a paused subscription is resumed: an on_hold one is reactivated by the customer paying
+     * the overdue amount, and an active one needs nothing.
      *
      * @param string $dodo_subscription_id The ID of the subscription to resume.
+     * @return bool True if the subscription was resumed.
      * @throws \Exception If the API request fails or returns an error response.
      */
     public function resume_subscription($dodo_subscription_id)
     {
-        $body = array(
-            'cancel_at_next_billing_date' => false,
-            'status' => 'active'
-        );
+        $current = $this->get_subscription($dodo_subscription_id);
+        if (!$current || ($current['status'] ?? '') !== 'paused') {
+            return false;
+        }
 
-        $res = $this->patch("/subscriptions/{$dodo_subscription_id}", $body);
+        // Dodo rejects "active" combined with any other field.
+        $res = $this->patch("/subscriptions/{$dodo_subscription_id}", array('status' => 'active'));
 
         if (is_wp_error($res)) {
             throw new Exception("Failed to resume subscription: " . esc_html($res->get_error_message()));
@@ -1319,7 +1358,7 @@ class Dodo_Payments_API
             throw new Exception("Failed to resume subscription: " . esc_html($res['body']));
         }
 
-        return;
+        return true;
     }
 
     /**

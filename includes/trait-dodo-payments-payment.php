@@ -392,12 +392,12 @@ public function do_payment($order)
         return $this->handle_subscription_upgrade($order, $upgrade_meta);
     }
 
-    // Paying a free-trial order ends the trial on its existing Dodo subscription;
-    // a new checkout would start a second subscription and orphan the first.
+    // An order whose Dodo subscription already exists is paid on that subscription;
+    // a new checkout would start a second subscription (with a new trial) and orphan the first.
     if ($contains_subscription) {
-        $trial_result = $this->maybe_end_trial_now($order);
-        if ($trial_result) {
-            return $trial_result;
+        $existing_result = $this->maybe_pay_existing_subscription($order);
+        if ($existing_result) {
+            return $existing_result;
         }
     }
 
@@ -652,16 +652,18 @@ public function do_payment($order)
 }
 
 /**
- * Ends a free trial early when the customer pays its order, so Dodo charges the saved card now.
+ * Pays an unpaid order on the Dodo subscription it already has, instead of creating another.
  *
- * An unpaid order whose subscription already maps to an active Dodo subscription is in its
- * trial (the parent stays pending until the first charge). Dodo bills when next_billing_date
- * is reached, so moving it to now charges the mandate; payment.succeeded then completes the order.
+ * - Active: the subscription is in its free trial (the parent stays pending until the first
+ *   charge). Dodo bills when next_billing_date is reached, so moving it to now ends the trial
+ *   and charges the saved card; payment.succeeded then completes the order.
+ * - On hold: the charge at trial end failed. Dodo's "pay pending dues" page takes a new card
+ *   and charges the overdue amount, which reactivates the subscription.
  *
  * @param WC_Order $order Order being paid.
- * @return array|null Gateway result, or null when the order is not in a Dodo trial.
+ * @return array|null Gateway result, or null when a new checkout is correct.
  */
-private function maybe_end_trial_now($order)
+private function maybe_pay_existing_subscription($order)
 {
     $wc_subscription_id = $this->find_subscription_id_from_order($order->get_id());
     $dodo_subscription_id = $wc_subscription_id ? Dodo_Payments_Subscription_DB::get_dodo_subscription_id($wc_subscription_id) : null;
@@ -670,7 +672,25 @@ private function maybe_end_trial_now($order)
     }
 
     $dodo_sub = $this->dodo_payments_api->get_subscription($dodo_subscription_id);
-    if (!$dodo_sub || ($dodo_sub['status'] ?? '') !== 'active') {
+    $status = $dodo_sub['status'] ?? '';
+
+    if ('on_hold' === $status) {
+        try {
+            $link = $this->dodo_payments_api->create_payment_method_update_link($dodo_subscription_id, $this->get_return_url($order));
+        } catch (Exception $e) {
+            $this->log_debug('Payment method update link failed for order #' . $order->get_id() . ': ' . $e->getMessage());
+            wc_add_notice(__('We could not start your payment. Please try again or contact us.', 'dodo-payments-for-woocommerce'), 'error');
+            return array('result' => 'failure');
+        }
+        $order->add_order_note(sprintf(
+            // translators: %s: Dodo subscription ID
+            __('Dodo Payments: customer sent to pay the overdue amount on %s.', 'dodo-payments-for-woocommerce'),
+            $dodo_subscription_id
+        ));
+        return array('result' => 'success', 'redirect' => $link);
+    }
+
+    if ('active' !== $status) {
         return null; // Never started (abandoned checkout) or ended: a new checkout is correct.
     }
 

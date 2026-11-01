@@ -66,8 +66,9 @@ private function suspend_lm_subscription($subscription)
     }
 
     try {
-        $this->dodo_payments_api->pause_subscription($dodo_subscription_id);
-        $subscription->add_order_note(__('Subscription paused in Dodo Payments', 'dodo-payments-for-woocommerce'));
+        if ($this->dodo_payments_api->pause_subscription($dodo_subscription_id)) {
+            $subscription->add_order_note(__('Subscription paused in Dodo Payments', 'dodo-payments-for-woocommerce'));
+        }
     } catch (\Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -133,8 +134,9 @@ private function reactivate_lm_subscription($subscription)
     }
 
     try {
-        $this->dodo_payments_api->resume_subscription($dodo_subscription_id);
-        $subscription->add_order_note(__('Subscription resumed in Dodo Payments', 'dodo-payments-for-woocommerce'));
+        if ($this->dodo_payments_api->resume_subscription($dodo_subscription_id)) {
+            $subscription->add_order_note(__('Subscription resumed in Dodo Payments', 'dodo-payments-for-woocommerce'));
+        }
     } catch (\Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -269,14 +271,15 @@ public function suspend_subscription($subscription)
     }
 
     try {
-        $this->dodo_payments_api->pause_subscription($dodo_subscription_id);
-        $subscription->add_order_note(
-            sprintf(
-                // translators: %1$s: Subscription ID
-                __('Subscription paused in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                $dodo_subscription_id
-            )
-        );
+        if ($this->dodo_payments_api->pause_subscription($dodo_subscription_id)) {
+            $subscription->add_order_note(
+                sprintf(
+                    // translators: %1$s: Subscription ID
+                    __('Subscription paused in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                    $dodo_subscription_id
+                )
+            );
+        }
     } catch (Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -305,14 +308,15 @@ public function reactivate_subscription($subscription)
     }
 
     try {
-        $this->dodo_payments_api->resume_subscription($dodo_subscription_id);
-        $subscription->add_order_note(
-            sprintf(
-                // translators: %1$s: Subscription ID
-                __('Subscription resumed in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                $dodo_subscription_id
-            )
-        );
+        if ($this->dodo_payments_api->resume_subscription($dodo_subscription_id)) {
+            $subscription->add_order_note(
+                sprintf(
+                    // translators: %1$s: Subscription ID
+                    __('Subscription resumed in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                    $dodo_subscription_id
+                )
+            );
+        }
     } catch (Exception $e) {
         $subscription->add_order_note(
             sprintf(
