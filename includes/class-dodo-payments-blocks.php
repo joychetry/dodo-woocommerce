@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 use Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType;
 
 /**
- * @since 1.1.0
+ * @since 1.2.0
  */
 final class Dodo_Payments_Blocks extends AbstractPaymentMethodType
 {
@@ -49,7 +49,7 @@ final class Dodo_Payments_Blocks extends AbstractPaymentMethodType
             'dodo-payments-blocks',
             DODO_PAYMENTS_PLUGIN_URL . 'assets/js/dodo-blocks.js',
             array('wc-blocks-registry', 'wc-settings', 'wp-element', 'wp-html-entities', 'wp-i18n'),
-            '1.1.0',
+            '1.2.0',
             true
         );
         wp_set_script_translations('dodo-payments-blocks', 'dodo-payments-for-woocommerce');

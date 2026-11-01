@@ -3,7 +3,7 @@ Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
 Requires at least: 7.1
 Tested up to: 7.1
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,14 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 1.2.0 =
+* Feature: Support the WooCommerce Checkout block, including business purchase and tax ID fields
+* Change: Requires WordPress 7.1 and WooCommerce 11.0 or higher
+* Fix: Cart is emptied only after a successful payment, so failed payments can be retried
+* Fix: Overlay checkout only opens Dodo Payments checkout URLs
+* Fix: Subscription plan-change confirmations now complete the right upgrade order, even when the webhook arrives late
+* Performance: Checkout scripts load deferred
 
 = 0.6 =
 * Feature: Add "Buy as Company" functionality - Allow customers to purchase as business and provide company name for invoices
