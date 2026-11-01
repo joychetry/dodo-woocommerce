@@ -115,6 +115,7 @@ class Dodo_Payments_WC_Gateway extends WC_Payment_Gateway
                     private bool $global_tax_inclusive;
                     private bool $enable_tax_id_collection;
                     private bool $enable_overlay_checkout;
+                    private bool $enable_inline_checkout;
 
 
             use DodoPaymentsB2b;
@@ -194,14 +195,14 @@ foreach (array(
 unset($dodo_payments_hook, $dodo_payments_method);
 
 /**
- * Loads the gateways on the order-received page, so the gateway's return handler
- * (capture_payment_id_from_return, template_redirect priority 10) runs there:
- * WooCommerce does not instantiate gateways on that page by itself.
+ * Loads the gateways on the order-received and order-pay pages, so the gateway's hooks run there:
+ * the return handler (capture_payment_id_from_return, template_redirect priority 10) and the
+ * inline checkout scripts. WooCommerce does not instantiate gateways on those pages by itself.
  *
  * @since 1.2.1
  */
 add_action('template_redirect', function () {
-    if (function_exists('is_wc_endpoint_url') && is_wc_endpoint_url('order-received')) {
+    if (function_exists('is_wc_endpoint_url') && (is_wc_endpoint_url('order-received') || is_wc_endpoint_url('order-pay'))) {
         WC()->payment_gateways();
     }
 }, 9);

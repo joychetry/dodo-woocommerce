@@ -30,10 +30,14 @@
             return;
         }
 
+        // Inline: the form is embedded in the order payment page instead of opening in a modal.
+        var isInline = dodoCheckoutOverlay.displayType === 'inline';
+
         // Initialize Dodo Payments SDK
         try {
             DodoPaymentsSDK.Initialize({
                 mode: dodoCheckoutOverlay.mode, // 'test' or 'live'
+                displayType: isInline ? 'inline' : 'overlay',
                 onEvent: function(event) {
                     handleCheckoutEvent(event);
                 }
@@ -53,6 +57,9 @@
 
             switch (eventType) {
                 case 'checkout.opened':
+                    if (isInline) {
+                        break;
+                    }
                     // Overlay opened
                     $('body').addClass('dodo-checkout-overlay-open');
                     // Clear session data to prevent reopening on refresh
@@ -75,6 +82,18 @@
 
                 case 'checkout.customer_details_submitted':
                     // Customer details submitted
+                    break;
+
+                case 'checkout.form_ready':
+                    $('#dodo-inline-checkout-loading').remove();
+                    break;
+
+                case 'checkout.breakdown':
+                    renderBreakdown(event.data && event.data.message);
+                    break;
+
+                case 'checkout.link_expired':
+                    showErrorMessage(dodoCheckoutOverlay.i18n.expired);
                     break;
 
                 case 'checkout.redirect':
@@ -100,9 +119,64 @@
         }
 
         /**
+         * Formats an amount in the currency's smallest unit (cents for USD, yen for JPY).
+         */
+        function formatAmount(amount, currency) {
+            var format = new Intl.NumberFormat(document.documentElement.lang || undefined, { style: 'currency', currency: currency });
+            return format.format(amount / Math.pow(10, format.resolvedOptions().maximumFractionDigits));
+        }
+
+        /**
+         * Shows Dodo's prices on the order payment page. Dodo calculates the tax, so these
+         * replace WooCommerce's totals.
+         */
+        function renderBreakdown(breakdown) {
+            if (!breakdown || !breakdown.currency) {
+                return;
+            }
+
+            var $table = $('#dodo-inline-totals');
+            var chargedCurrency = breakdown.finalTotalCurrency || breakdown.currency;
+
+            $table.find('[data-dodo-row]').each(function() {
+                var $row = $(this);
+                var key = $row.data('dodo-row');
+                var value = breakdown[key];
+                var hasValue = typeof value === 'number';
+                var visible = hasValue;
+                var text = hasValue ? formatAmount(key === 'discount' ? -value : value, key === 'finalTotal' ? chargedCurrency : breakdown.currency) : '';
+
+                if (key === 'discount') {
+                    visible = hasValue && value > 0;
+                } else if (key === 'tax' && !hasValue) {
+                    // Tax is unknown until the customer enters a country and postal code.
+                    visible = true;
+                    text = dodoCheckoutOverlay.i18n.taxPending;
+                } else if (key === 'finalTotal') {
+                    // Only differs from the total with currency conversion or payment method fees.
+                    visible = hasValue && (value !== breakdown.total || chargedCurrency !== breakdown.currency);
+                }
+
+                $row.prop('hidden', !visible).find('td').text(text);
+            });
+
+            $table.prop('hidden', false);
+        }
+
+        /**
          * Show error message to user
          */
         function showErrorMessage(message) {
+            var $notice = $('#dodo-inline-checkout-notice');
+            if ($notice.length) {
+                // Text, not HTML: the message comes from the checkout frame.
+                var $error = $('<div class="woocommerce-error"></div>').text(message + ' ');
+                $error.append($('<a></a>').attr('href', dodoCheckoutOverlay.retryUrl).text(dodoCheckoutOverlay.i18n.retry));
+                $notice.empty().append($error);
+                $('#dodo-inline-checkout-loading').remove();
+                return;
+            }
+
             // Remove any existing error notices
             $('.woocommerce-error, .woocommerce-message').remove();
 
@@ -140,12 +214,14 @@
                     return; // Already open, don't open again
                 }
 
-                DodoPaymentsSDK.Checkout.open({
-                    checkoutUrl: dodoCheckoutOverlay.checkoutUrl
-                });
+                var options = { checkoutUrl: dodoCheckoutOverlay.checkoutUrl };
+                if (isInline) {
+                    options.elementId = dodoCheckoutOverlay.elementId;
+                }
+                DodoPaymentsSDK.Checkout.open(options);
             } catch (error) {
                 console.error('Error opening checkout overlay:', error);
-                showErrorMessage('Failed to open checkout. Please try again.');
+                showErrorMessage(isInline ? dodoCheckoutOverlay.i18n.error : 'Failed to open checkout. Please try again.');
             }
         }
 

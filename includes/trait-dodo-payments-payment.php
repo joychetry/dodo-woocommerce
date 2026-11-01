@@ -40,8 +40,9 @@ public function process_payment($order_id)
     if ('success' === ($res['result'] ?? '')) {
         wc_reduce_stock_levels($order_id);
         // The overlay reopens on the checkout page, which WooCommerce redirects to the cart when
-        // the cart is empty. Core's wc_clear_cart_after_payment() empties it on order-received.
-        if (!$this->opens_overlay_checkout()) {
+        // the cart is empty; inline keeps it so an abandoned payment can go back to checkout.
+        // Core's wc_clear_cart_after_payment() empties it on order-received.
+        if (!$this->opens_overlay_checkout() && !$this->enable_inline_checkout) {
             WC()->cart->empty_cart();
         }
     }
@@ -69,18 +70,24 @@ private function opens_overlay_checkout()
  */
 public function enqueue_overlay_checkout_scripts()
 {
-    // Only enqueue on checkout page when overlay checkout is enabled
-    if (!is_checkout() || !$this->enable_overlay_checkout) {
+    if (!is_checkout()) {
         return;
     }
 
-    if (!WC()->session) {
+    $inline_order = $this->get_inline_checkout_order();
+    if ($inline_order) {
+        $this->enqueue_checkout_sdk($inline_order->get_meta('_dodo_checkout_session_url'), $inline_order);
+        return;
+    }
+
+    // Only enqueue on checkout page when overlay checkout is enabled
+    if (!$this->enable_overlay_checkout || !WC()->session) {
         return;
     }
 
     // Check if we have a checkout session URL from multiple sources
     $checkout_session_url = null;
-    
+
     // Priority 1: Check URL parameter (for redirect back to checkout)
     if (isset($_GET['dodo_checkout_session_url'])) {
         $url = esc_url_raw(wp_unslash($_GET['dodo_checkout_session_url']), array('https'));
@@ -128,42 +135,204 @@ public function enqueue_overlay_checkout_scripts()
         return;
     }
 
+    $this->enqueue_checkout_sdk($checkout_session_url);
+}
+
+/**
+ * Enqueues the Dodo Payments Checkout SDK and our script that opens it.
+ *
+ * @param string        $checkout_session_url Dodo checkout session URL to open.
+ * @param WC_Order|null $inline_order         Order shown on the order payment page; null opens the overlay.
+ * @return void
+ */
+private function enqueue_checkout_sdk($checkout_session_url, $inline_order = null)
+{
     // Enqueue Dodo Payments Checkout SDK from official CDN.
     // This is the official SDK provided by Dodo Payments (the payment processor).
-    // The SDK is required for the overlay checkout functionality to work.
+    // The SDK is required for the overlay and inline checkout to work.
     // The script is loaded from jsDelivr CDN which is the official distribution channel.
     // Security: The SDK only communicates with Dodo Payments servers and does not
     // execute arbitrary code on your site.
     // Note: External script loading is allowed for payment processor SDKs per WordPress.org guidelines.
     // An exception will be requested during plugin review if needed.
+    // Pinned: an unreviewed SDK release must not change checkout. 2.1.0 is the first with inline support tested here.
     wp_enqueue_script(
         'dodo-payments-checkout-sdk',
-        'https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js',
+        'https://cdn.jsdelivr.net/npm/dodopayments-checkout@2.1.0/dist/index.js',
         array(),
-        '1.0.0', // Version for cache busting - will be updated with SDK releases
+        null,
         array('in_footer' => true, 'strategy' => 'defer')
     );
 
-    // Enqueue our overlay checkout script
+    // Enqueue our overlay/inline checkout script
     wp_enqueue_script(
         'dodo-checkout-overlay',
         DODO_PAYMENTS_PLUGIN_URL . 'assets/js/dodo-checkout-overlay.min.js',
         array('dodo-payments-checkout-sdk', 'jquery'),
-        '0.5.0',
+        '1.3.0',
         array('in_footer' => true, 'strategy' => 'defer')
     );
 
-    // Pass data to JavaScript
-    wp_localize_script(
-        'dodo-checkout-overlay',
-        'dodoCheckoutOverlay',
-        array(
-            'checkoutUrl' => $checkout_session_url,
-            'mode' => $this->testmode ? 'test' : 'live',
-            'ajaxUrl' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('dodo_checkout_overlay'),
-        )
+    $data = array(
+        'checkoutUrl' => $checkout_session_url,
+        'mode' => $this->testmode ? 'test' : 'live',
+        'ajaxUrl' => admin_url('admin-ajax.php'),
+        'nonce' => wp_create_nonce('dodo_checkout_overlay'),
+        'i18n' => array(
+            'taxPending' => __('Calculated after you enter your address', 'dodo-payments-for-woocommerce'),
+            'error' => __('The payment form could not be loaded.', 'dodo-payments-for-woocommerce'),
+            'expired' => __('This payment session has expired.', 'dodo-payments-for-woocommerce'),
+            'retry' => __('Start a new payment', 'dodo-payments-for-woocommerce'),
+        ),
     );
+
+    if ($inline_order) {
+        $data += array(
+            'displayType' => 'inline',
+            'elementId' => 'dodo-inline-checkout',
+            // Paying again from the pay-for-order form creates a fresh checkout session.
+            'retryUrl' => $inline_order->get_checkout_payment_url(),
+        );
+
+        // Dodo calculates the tax, so WooCommerce's order total above the form is not what the customer pays.
+        wp_register_style('dodo-inline-checkout', false, array(), '1.3.0');
+        wp_enqueue_style('dodo-inline-checkout');
+        wp_add_inline_style('dodo-inline-checkout', '
+            .woocommerce ul.order_details li.total { display: none; }
+            .dodo-inline-checkout__items { list-style: none; margin: 0 0 1em; padding: 0; }
+            .dodo-inline-checkout__totals[hidden] { display: none; }
+            #dodo-inline-checkout { min-height: 480px; }
+        ');
+    }
+
+    wp_localize_script('dodo-checkout-overlay', 'dodoCheckoutOverlay', $data);
+}
+
+/**
+ * The order whose inline checkout belongs on this page, if any.
+ *
+ * Inline checkout lives on the order payment page's receipt view (order-pay without
+ * pay_for_order), where process_payment() sends the customer.
+ *
+ * @return WC_Order|null
+ */
+private function get_inline_checkout_order()
+{
+    // phpcs:disable WordPress.Security.NonceVerification.Recommended -- read-only; access is checked with the order key.
+    if (!$this->enable_inline_checkout || !is_wc_endpoint_url('order-pay') || isset($_GET['pay_for_order'])) {
+        return null;
+    }
+
+    $order = wc_get_order(absint(get_query_var('order-pay')));
+    $key = isset($_GET['key']) && is_string($_GET['key']) ? wc_clean(wp_unslash($_GET['key'])) : '';
+    // phpcs:enable
+
+    if (!$order
+        || $order->get_payment_method() !== $this->id
+        || !hash_equals($order->get_order_key(), $key)
+        || !$order->needs_payment()
+        || !$order->get_meta('_dodo_checkout_session_url')) {
+        return null;
+    }
+
+    return $order;
+}
+
+/**
+ * Renders the inline checkout on the order payment page: the items, Dodo's totals, and the
+ * Dodo Payments form. Dodo calculates the tax, so every amount comes from its checkout.breakdown event.
+ *
+ * @param int $order_id Order ID.
+ * @return void
+ */
+public function render_inline_checkout($order_id)
+{
+    $order = $this->get_inline_checkout_order();
+    if (!$order || $order->get_id() !== (int) $order_id) {
+        return;
+    }
+
+    $subscription = wc_get_order($this->find_subscription_id_from_order($order->get_id()));
+    ?>
+    <section class="dodo-inline-checkout">
+        <h2><?php esc_html_e('Order summary', 'dodo-payments-for-woocommerce'); ?></h2>
+        <ul class="dodo-inline-checkout__items">
+            <?php foreach ($order->get_items() as $item) : ?>
+                <li><?php echo esc_html($item->get_name()); ?> &times; <?php echo esc_html($item->get_quantity()); ?></li>
+            <?php endforeach; ?>
+        </ul>
+
+        <?php if ($subscription) : ?>
+            <p class="dodo-inline-checkout__recurring"><?php echo wp_kses_post($this->get_inline_renewal_text($order, $subscription)); ?></p>
+        <?php endif; ?>
+
+        <table class="shop_table dodo-inline-checkout__totals" id="dodo-inline-totals" hidden>
+            <tbody>
+                <tr data-dodo-row="subTotal"><th scope="row"><?php esc_html_e('Subtotal', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
+                <tr data-dodo-row="discount"><th scope="row"><?php esc_html_e('Discount', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
+                <tr data-dodo-row="tax"><th scope="row"><?php esc_html_e('Tax', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
+                <tr data-dodo-row="total"><th scope="row"><?php esc_html_e('Total', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
+                <tr data-dodo-row="finalTotal"><th scope="row"><?php esc_html_e('Amount charged', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
+            </tbody>
+        </table>
+
+        <div id="dodo-inline-checkout-notice" role="alert"></div>
+        <p id="dodo-inline-checkout-loading"><?php esc_html_e('Loading secure payment form…', 'dodo-payments-for-woocommerce'); ?></p>
+        <div id="dodo-inline-checkout"></div>
+    </section>
+    <?php
+}
+
+/**
+ * "Renews every month at $10.00 plus tax", with the trial end when this checkout keeps the trial.
+ *
+ * @param WC_Order $order        Parent order.
+ * @param WC_Order $subscription WooCommerce Subscriptions or License Monks subscription.
+ * @return string HTML.
+ */
+private function get_inline_renewal_text($order, $subscription)
+{
+    $interval = max(1, (int) $subscription->get_billing_interval());
+    $periods = array(
+        // translators: %d: number of days
+        'day' => _n('day', '%d days', $interval, 'dodo-payments-for-woocommerce'),
+        // translators: %d: number of weeks
+        'week' => _n('week', '%d weeks', $interval, 'dodo-payments-for-woocommerce'),
+        // translators: %d: number of months
+        'month' => _n('month', '%d months', $interval, 'dodo-payments-for-woocommerce'),
+        // translators: %d: number of years
+        'year' => _n('year', '%d years', $interval, 'dodo-payments-for-woocommerce'),
+    );
+    $period = $periods[$subscription->get_billing_period()] ?? null;
+    if (!$period) {
+        return '';
+    }
+
+    // WooCommerce does not calculate the tax, Dodo does; show the price before or including Dodo's tax.
+    $price = wc_price($subscription->get_total() - $subscription->get_total_tax(), array('currency' => $subscription->get_currency()));
+    $text = sprintf(
+        $this->global_tax_inclusive
+            // translators: %1$s: billing period, e.g. "month" or "3 months"; %2$s: price
+            ? __('Renews every %1$s at %2$s, tax included.', 'dodo-payments-for-woocommerce')
+            // translators: %1$s: billing period, e.g. "month" or "3 months"; %2$s: price
+            : __('Renews every %1$s at %2$s plus tax.', 'dodo-payments-for-woocommerce'),
+        sprintf($period, $interval),
+        $price
+    );
+
+    // WooCommerce Subscriptions stores the trial end as a timestamp, License Monks as a date.
+    $trial_end = 'lm_subscription' === $subscription->get_type()
+        ? $subscription->get_trial_end_date_utc()
+        : ($subscription->get_time('trial_end') ? new WC_DateTime('@' . $subscription->get_time('trial_end')) : null);
+    if ('yes' !== $order->get_meta('_dodo_skip_trial') && $trial_end && $trial_end->getTimestamp() > time()) {
+        $text .= ' ' . sprintf(
+            // translators: %s: trial end date
+            __('Free trial until %s.', 'dodo-payments-for-woocommerce'),
+            wc_format_datetime($trial_end)
+        );
+    }
+
+    return $text;
 }
 
 /**
@@ -456,9 +625,8 @@ public function do_payment($order)
             }
         }
 
-        // Use checkout sessions API when tax ID collection is enabled OR overlay checkout is enabled
-        // This provides a modern checkout experience with additional features
-        if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
+        // Tax ID collection, overlay and inline checkout all need the Checkout Sessions API.
+        if ($this->enable_tax_id_collection || $this->enable_overlay_checkout || $this->enable_inline_checkout) {
             // Skip-trial only on re-pay of an existing order. A fresh checkout has no
             // _dodo_checkout_session_id yet (it is written at the end of this method),
             // so trial stays intact; once the order has been through Dodo once (e.g. a
@@ -522,11 +690,32 @@ public function do_payment($order)
     }
 
     // Handle both checkout session and legacy payment/subscription responses
-    if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
+    if ($this->enable_tax_id_collection || $this->enable_overlay_checkout || $this->enable_inline_checkout) {
         // Handle Checkout Session response
         if (isset($response['checkout_url']) && isset($response['session_id'])) {
             // Store the session ID for future reference
             $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
+
+            if ($this->enable_inline_checkout) {
+                $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
+                // The order payment page only shows the trial when this session keeps it.
+                $order->update_meta_data('_dodo_skip_trial', $skip_trial ? 'yes' : 'no');
+                $order->save();
+
+                $order->add_order_note(
+                    sprintf(
+                        // translators: %1$s: Session ID
+                        __('Checkout session created in Dodo Payments: %1$s (Inline checkout)', 'dodo-payments-for-woocommerce'),
+                        $response['session_id']
+                    )
+                );
+
+                // The order payment page (receipt view) embeds the form; see render_inline_checkout().
+                return array(
+                    'result' => 'success',
+                    'redirect' => $order->get_checkout_payment_url(true)
+                );
+            }
 
             // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
             if ($this->opens_overlay_checkout()) {

@@ -50,7 +50,10 @@ public function __construct()
     $this->global_tax_category = $this->get_option('global_tax_category');
     $this->global_tax_inclusive = 'yes' === $this->get_option('global_tax_inclusive');
     $this->enable_tax_id_collection = 'yes' === $this->get_option('enable_tax_id_collection');
-    $this->enable_overlay_checkout = 'yes' === $this->get_option('enable_overlay_checkout');
+    // Before checkout_display existed, overlay was a checkbox; keep that choice until the settings are saved.
+    $checkout_display = $this->get_option('checkout_display') ?: ('yes' === $this->get_option('enable_overlay_checkout') ? 'overlay' : 'redirect');
+    $this->enable_overlay_checkout = 'overlay' === $checkout_display;
+    $this->enable_inline_checkout = 'inline' === $checkout_display;
 
     $this->init_form_fields();
     $this->init_settings();
@@ -79,8 +82,10 @@ public function __construct()
     // Invoice display in admin (HPOS compatible)
     add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
 
-    // Overlay checkout scripts
+    // Overlay and inline checkout scripts
     add_action('wp_enqueue_scripts', array($this, 'enqueue_overlay_checkout_scripts'));
+    // Inline checkout form on the order payment page
+    add_action('woocommerce_receipt_' . $this->id, array($this, 'render_inline_checkout'));
     
     // AJAX handler to clear checkout session URL
     add_action('wp_ajax_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
@@ -232,18 +237,23 @@ public function init_form_fields()
             'desc_tip' => false,
             'description' => __('When enabled, customers will be able to enter their business Tax ID or VAT number on the Dodo Payments checkout page. This is useful for B2B transactions and tax compliance. Uses the modern Checkout Sessions API.', 'dodo-payments-for-woocommerce'),
         ),
-        'overlay_checkout_title' => array(
-            'title' => __('Overlay Checkout', 'dodo-payments-for-woocommerce'),
+        'checkout_display_title' => array(
+            'title' => __('Checkout Experience', 'dodo-payments-for-woocommerce'),
             'type' => 'title',
-            'description' => __('Enable embedded checkout overlay for a seamless checkout experience without leaving your site.', 'dodo-payments-for-woocommerce'),
+            'description' => __('Choose where customers enter their payment details.', 'dodo-payments-for-woocommerce'),
         ),
-        'enable_overlay_checkout' => array(
-            'title' => __('Enable Overlay Checkout', 'dodo-payments-for-woocommerce'),
-            'type' => 'checkbox',
-            'label' => __('Use overlay checkout SDK for embedded checkout experience', 'dodo-payments-for-woocommerce'),
-            'default' => 'no',
+        'checkout_display' => array(
+            'title' => __('Checkout Display', 'dodo-payments-for-woocommerce'),
+            'type' => 'select',
+            'options' => array(
+                'redirect' => __('Redirect to the Dodo Payments checkout page', 'dodo-payments-for-woocommerce'),
+                'overlay' => __('Overlay on the checkout page', 'dodo-payments-for-woocommerce'),
+                'inline' => __('Inline on your order payment page', 'dodo-payments-for-woocommerce'),
+            ),
+            // Sites that had the old "Enable Overlay Checkout" checkbox on keep the overlay.
+            'default' => $this->enable_overlay_checkout ? 'overlay' : 'redirect',
             'desc_tip' => false,
-            'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
+            'description' => __('<b>Overlay</b> opens the payment form in a window on top of the classic checkout page; the checkout block redirects instead. <b>Inline</b> embeds the payment form in your order payment page, next to the order summary, and works with the classic checkout and the checkout block. Overlay and Inline use the Checkout Sessions API. For Apple Pay with Inline, verify your domain in <b>Dodo Payments &gt; Settings &gt; Payment Methods &gt; Apple Pay</b>.', 'dodo-payments-for-woocommerce'),
         ),
         'webhook_endpoint' => array(
             'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
