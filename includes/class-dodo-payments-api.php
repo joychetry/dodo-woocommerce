@@ -1166,7 +1166,7 @@ class Dodo_Payments_API
      */
     public function get_subscription_payments($dodo_subscription_id)
     {
-        $res = $this->get("/subscriptions/{$dodo_subscription_id}/payments");
+        $res = $this->get('/payments?subscription_id=' . rawurlencode($dodo_subscription_id));
 
         if (is_wp_error($res)) {
             return false;

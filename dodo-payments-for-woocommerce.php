@@ -211,7 +211,51 @@ add_action('before_woocommerce_pay', function () {
     if (!empty($_GET['dodo_payment_failed'])) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display only.
         wc_print_notice(__('Your payment was not completed. Please try again or use a different payment method.', 'dodo-payments-for-woocommerce'), 'error');
     }
+
+    $order = wc_get_order(absint(get_query_var('order-pay')));
+    $subscription = $order ? dodo_payments_get_trial_subscription($order) : null;
+    if ($subscription) {
+        $trial_end = $subscription->get_trial_end_date_utc();
+        wc_print_notice(sprintf(
+            // translators: %s: Trial end date
+            __('You are on a free trial until %s. Paying now ends your trial early: the card you added at signup is charged right away and your first billing period starts today.', 'dodo-payments-for-woocommerce'),
+            $trial_end ? wc_format_datetime($trial_end) : __('the end of your trial', 'dodo-payments-for-woocommerce')
+        ), 'notice');
+    }
 });
+
+/**
+ * Labels the Pay action on free-trial orders, which ends the trial instead of starting a new checkout.
+ *
+ * @since 1.2.1
+ */
+add_filter('woocommerce_my_account_my_orders_actions', function ($actions, $order) {
+    if (isset($actions['pay']) && dodo_payments_get_trial_subscription($order)) {
+        $actions['pay']['name'] = __('End trial & pay now', 'dodo-payments-for-woocommerce');
+    }
+    return $actions;
+}, 10, 2);
+
+/**
+ * The License Monks subscription of an unpaid Dodo Payments order that is still in its free trial.
+ *
+ * @since 1.2.1
+ * @param WC_Order $order Parent order.
+ * @return WC_Order|null
+ */
+function dodo_payments_get_trial_subscription($order)
+{
+    if ($order->get_payment_method() !== 'dodo_payments' || $order->is_paid()) {
+        return null;
+    }
+    foreach ($order->get_items() as $item) {
+        $subscription = wc_get_order($item->get_meta('_lm_subscription_id', true));
+        if ($subscription && $subscription->get_type() === 'lm_subscription' && $subscription->get_meta('_dodo_trial_active') === 'yes') {
+            return $subscription;
+        }
+    }
+    return null;
+}
 
 /**
  * Returns the gateway instance WooCommerce registered, if the subscription is paid with Dodo Payments.

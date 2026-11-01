@@ -297,6 +297,19 @@ private function handle_payment_webhook($payload, $status)
                         ));
                     }
                     // ─── End trial flag clearing ───────────────────────────────
+
+                    // The first post-trial charge pays the parent order: start the first paid period
+                    // now (the trial may have been ended early), not with a renewal order on top.
+                    if ($was_in_trial && $subscription->get_type() === 'lm_subscription' && class_exists('LicenseMonks_Subscription_Lifecycle')) {
+                        $now = new WC_DateTime('now', new DateTimeZone('UTC'));
+                        $period_end = $subscription->get_current_period_end_utc();
+                        if (!$period_end || $period_end > $now) {
+                            $subscription->set_current_period_end_utc($now);
+                            $subscription->save();
+                        }
+                        LicenseMonks_Subscription_Lifecycle::advance_period($subscription, $order);
+                        break;
+                    }
                 }
 
                 if (!$subscription) {

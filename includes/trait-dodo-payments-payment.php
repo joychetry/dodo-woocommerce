@@ -392,6 +392,15 @@ public function do_payment($order)
         return $this->handle_subscription_upgrade($order, $upgrade_meta);
     }
 
+    // Paying a free-trial order ends the trial on its existing Dodo subscription;
+    // a new checkout would start a second subscription and orphan the first.
+    if ($contains_subscription) {
+        $trial_result = $this->maybe_end_trial_now($order);
+        if ($trial_result) {
+            return $trial_result;
+        }
+    }
+
     try {
         $synced_products = $this->sync_products($order);
 
@@ -640,6 +649,69 @@ public function do_payment($order)
             }
         }
     }
+}
+
+/**
+ * Ends a free trial early when the customer pays its order, so Dodo charges the saved card now.
+ *
+ * An unpaid order whose subscription already maps to an active Dodo subscription is in its
+ * trial (the parent stays pending until the first charge). Dodo bills when next_billing_date
+ * is reached, so moving it to now charges the mandate; payment.succeeded then completes the order.
+ *
+ * @param WC_Order $order Order being paid.
+ * @return array|null Gateway result, or null when the order is not in a Dodo trial.
+ */
+private function maybe_end_trial_now($order)
+{
+    $wc_subscription_id = $this->find_subscription_id_from_order($order->get_id());
+    $dodo_subscription_id = $wc_subscription_id ? Dodo_Payments_Subscription_DB::get_dodo_subscription_id($wc_subscription_id) : null;
+    if (!$dodo_subscription_id) {
+        return null;
+    }
+
+    $dodo_sub = $this->dodo_payments_api->get_subscription($dodo_subscription_id);
+    if (!$dodo_sub || ($dodo_sub['status'] ?? '') !== 'active') {
+        return null; // Never started (abandoned checkout) or ended: a new checkout is correct.
+    }
+
+    // Still in trial only while nothing has been charged. A non-trial subscription whose first
+    // charge webhook is late must not be billed again.
+    $payments = $this->dodo_payments_api->get_subscription_payments($dodo_subscription_id);
+    if (false === $payments) {
+        wc_add_notice(__('We could not start your payment. Please try again or contact us.', 'dodo-payments-for-woocommerce'), 'error');
+        return array('result' => 'failure');
+    }
+    foreach ($payments['items'] ?? array() as $payment) {
+        if ((int) ($payment['total_amount'] ?? 0) > 0 && in_array($payment['status'] ?? '', array('succeeded', 'processing'), true)) {
+            wc_add_notice(__('Your payment is already being processed. Your order will update shortly.', 'dodo-payments-for-woocommerce'), 'notice');
+            return array('result' => 'success', 'redirect' => $this->get_return_url($order));
+        }
+    }
+
+    $redirect = $this->get_return_url($order);
+    $already_ending = strtotime($dodo_sub['next_billing_date'] ?? '') <= time() + 5 * MINUTE_IN_SECONDS;
+    if (!$already_ending) {
+        try {
+            // Dodo rejects past dates; a minute ahead is the earliest it accepts reliably.
+            $this->dodo_payments_api->extend_trial_period($dodo_subscription_id, gmdate('Y-m-d\TH:i:s\Z', time() + MINUTE_IN_SECONDS));
+        } catch (Exception $e) {
+            $this->log_debug('Ending trial early failed for order #' . $order->get_id() . ': ' . $e->getMessage());
+            wc_add_notice(__('We could not start your payment. Please try again or contact us.', 'dodo-payments-for-woocommerce'), 'error');
+            return array('result' => 'failure');
+        }
+        $note = sprintf(
+            // translators: %s: Dodo subscription ID
+            __('Dodo Payments: customer chose to pay now. Trial on %s ends in a minute and the saved card will be charged.', 'dodo-payments-for-woocommerce'),
+            $dodo_subscription_id
+        );
+        $order->add_order_note($note);
+        $subscription = wc_get_order($wc_subscription_id);
+        if ($subscription) {
+            $subscription->add_order_note($note);
+        }
+    }
+
+    return array('result' => 'success', 'redirect' => $redirect);
 }
 
 /**

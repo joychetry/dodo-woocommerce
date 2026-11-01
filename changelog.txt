@@ -18,6 +18,9 @@
 * Fix: License Monks subscription upgrades no longer fail with "WooCommerce Subscriptions is not active"
 * Fix: Upgrades recreate a Dodo product whose mapping is stale, instead of failing with a 404
 * Fix: The charge for a plan change completes its upgrade order instead of creating a renewal order and extending the subscription
+* Feature: Customers on a free trial can end it early and pay now from My Account (the order's Pay button becomes "End trial & pay now"); the card saved at signup is charged on the existing Dodo subscription
+* Fix: Paying a free-trial order no longer starts a second Dodo subscription with a new trial (which also re-linked the WooCommerce subscription to the new, unpaid one)
+* Fix: The first charge after a free trial completes the order and starts the first paid period from the charge date, instead of also creating a renewal order and sending a renewal email
 * Fix: The License Monks "trial ended" note shows the subscription ID
 * Enhancement: Every handled webhook is logged with its type, webhook ID, payment, subscription and order IDs
 
