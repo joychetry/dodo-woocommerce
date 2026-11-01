@@ -1,7 +1,7 @@
 === Dodo Payments for WooCommerce ===
 Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
-Requires at least: 6.1
+Requires at least: 6.9
 Tested up to: 7.1
 Stable tag: 1.1.0
 License: GPLv3 or later

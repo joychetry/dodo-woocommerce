@@ -37,13 +37,7 @@ class Dodo_Payments_API
      */
     private function log_debug($message)
     {
-        if (function_exists('wc_get_logger')) {
-            $logger = wc_get_logger();
-            $logger->debug('Dodo Payments API: ' . $message, array('source' => 'dodo-payments'));
-        } elseif (defined('WP_DEBUG') && WP_DEBUG) {
-            // Fallback to error log if WooCommerce logger is not available
-            error_log('Dodo Payments API: ' . $message);
-        }
+        wc_get_logger()->debug('Dodo Payments API: ' . $message, array('source' => 'dodo-payments'));
     }
 
     /**
@@ -434,7 +428,7 @@ class Dodo_Payments_API
         }
 
         $country = $order->get_billing_country();
-        if (empty($country) || !function_exists('WC') || !WC()->countries) {
+        if (empty($country)) {
             return '';
         }
 

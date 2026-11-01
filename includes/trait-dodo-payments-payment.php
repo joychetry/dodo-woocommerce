@@ -57,8 +57,7 @@ public function enqueue_overlay_checkout_scripts()
         return;
     }
 
-    // Ensure WooCommerce is loaded
-    if (!function_exists('WC') || !WC()->session) {
+    if (!WC()->session) {
         return;
     }
 
