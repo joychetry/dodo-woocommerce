@@ -57,9 +57,9 @@ class Dodo_Payments_Payment_DB
     $table_name = $wpdb->prefix . self::$table_name;
 
     return $wpdb->get_var(
-      // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
       $wpdb->prepare(
-        "SELECT dodo_payment_id FROM $table_name WHERE order_id = %d",
+        "SELECT dodo_payment_id FROM %i WHERE order_id = %d",
+        $table_name,
         $order_id
       )
     );
@@ -77,9 +77,9 @@ class Dodo_Payments_Payment_DB
     $table_name = $wpdb->prefix . self::$table_name;
 
     return $wpdb->get_var(
-      // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
       $wpdb->prepare(
-        "SELECT order_id FROM $table_name WHERE dodo_payment_id = %s",
+        "SELECT order_id FROM %i WHERE dodo_payment_id = %s",
+        $table_name,
         $dodo_payment_id
       )
     );

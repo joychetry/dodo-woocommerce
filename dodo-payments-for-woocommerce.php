@@ -25,10 +25,6 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) {
-    return;
-}
-
 // Plugin path constants — single source of truth for paths and URLs.
 // Always reference these instead of __FILE__ inside includes/ traits, where
 // __FILE__ would resolve to the includes/ directory.

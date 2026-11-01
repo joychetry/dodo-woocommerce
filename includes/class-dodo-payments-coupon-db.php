@@ -57,9 +57,9 @@ class Dodo_Payments_Coupon_DB
     $table_name = $wpdb->prefix . self::$table_name;
 
     return $wpdb->get_var(
-      // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
       $wpdb->prepare(
-        "SELECT dodo_coupon_id FROM $table_name WHERE local_coupon_id = %d",
+        "SELECT dodo_coupon_id FROM %i WHERE local_coupon_id = %d",
+        $table_name,
         $local_coupon_id
       )
     );
@@ -77,9 +77,9 @@ class Dodo_Payments_Coupon_DB
     $table_name = $wpdb->prefix . self::$table_name;
 
     return $wpdb->get_var(
-      // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
       $wpdb->prepare(
-        "SELECT local_coupon_id FROM $table_name WHERE dodo_coupon_id = %s",
+        "SELECT local_coupon_id FROM %i WHERE dodo_coupon_id = %s",
+        $table_name,
         $dodo_coupon_id
       )
     );
