@@ -5,9 +5,12 @@ verify-zip.sh
 version-bump.sh
 build/
 .agent
+.agents
 .claude
 docs/
 reference-files/
 AGENTS.md
 tests/
 CLAUDE.md
+skills-lock.json
+STUDIO.md

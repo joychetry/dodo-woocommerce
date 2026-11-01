@@ -5,7 +5,7 @@
  * Plugin URI: https://dodopayments.com
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: Dodo Payments
  * Developer: Dodo Payments
  * Text Domain: dodo-payments-for-woocommerce
@@ -168,6 +168,116 @@ function dodo_payments_keep_trial_orders_pending($cancel, $order)
     }
 
     return $cancel;
+}
+
+/**
+ * Syncs WooCommerce Subscriptions and License Monks status changes to Dodo Payments.
+ *
+ * Registered at plugin level because gateways are instantiated lazily: requests such as
+ * cancelling an order from My Account (?cancel_order=true) never load them, so hooks added
+ * in the gateway constructor would miss the change and Dodo would keep charging.
+ *
+ * @since 1.2.1
+ */
+foreach (array(
+    'woocommerce_subscription_status_updated' => 'handle_subscription_status_updated',
+    'woocommerce_subscription_dates_updated' => 'handle_subscription_date_change',
+    'licensemonks/subscription/status/updated' => 'handle_lm_subscription_status_updated',
+) as $dodo_payments_hook => $dodo_payments_method) {
+    add_action($dodo_payments_hook, function ($subscription, ...$args) use ($dodo_payments_method) {
+        $gateway = dodo_payments_get_gateway_for($subscription);
+        if ($gateway) {
+            $gateway->$dodo_payments_method($subscription, ...$args);
+        }
+    }, 10, 3);
+}
+unset($dodo_payments_hook, $dodo_payments_method);
+
+/**
+ * Loads the gateways on the order-received page, so the gateway's return handler
+ * (capture_payment_id_from_return, template_redirect priority 10) runs there:
+ * WooCommerce does not instantiate gateways on that page by itself.
+ *
+ * @since 1.2.1
+ */
+add_action('template_redirect', function () {
+    if (function_exists('is_wc_endpoint_url') && is_wc_endpoint_url('order-received')) {
+        WC()->payment_gateways();
+    }
+}, 9);
+
+// Shown on the pay-for-order page after a declined or abandoned Dodo payment (see capture_payment_id_from_return).
+add_action('before_woocommerce_pay', function () {
+    if (!empty($_GET['dodo_payment_failed'])) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display only.
+        wc_print_notice(__('Your payment was not completed. Please try again or use a different payment method.', 'dodo-payments-for-woocommerce'), 'error');
+    }
+
+    $order = wc_get_order(absint(get_query_var('order-pay')));
+    $subscription = $order ? dodo_payments_get_trial_subscription($order) : null;
+    if ($subscription) {
+        $trial_end = $subscription->get_trial_end_date_utc();
+        wc_print_notice(sprintf(
+            // translators: %s: Trial end date
+            __('You are on a free trial until %s. Paying now ends your trial early: the card you added at signup is charged right away and your first billing period starts today.', 'dodo-payments-for-woocommerce'),
+            $trial_end ? wc_format_datetime($trial_end) : __('the end of your trial', 'dodo-payments-for-woocommerce')
+        ), 'notice');
+    }
+});
+
+/**
+ * Labels the Pay action on free-trial orders, which ends the trial instead of starting a new checkout.
+ *
+ * @since 1.2.1
+ */
+add_filter('woocommerce_my_account_my_orders_actions', function ($actions, $order) {
+    if (isset($actions['pay']) && dodo_payments_get_trial_subscription($order)) {
+        $actions['pay']['name'] = __('End trial & pay now', 'dodo-payments-for-woocommerce');
+    }
+    return $actions;
+}, 10, 2);
+
+/**
+ * The License Monks subscription of an unpaid Dodo Payments order that is still in its free trial.
+ *
+ * @since 1.2.1
+ * @param WC_Order $order Parent order.
+ * @return WC_Order|null
+ */
+function dodo_payments_get_trial_subscription($order)
+{
+    // Only pending: a failed order means the charge at trial end was declined.
+    if ($order->get_payment_method() !== 'dodo_payments' || !$order->has_status('pending')) {
+        return null;
+    }
+    foreach ($order->get_items() as $item) {
+        $subscription = wc_get_order($item->get_meta('_lm_subscription_id', true));
+        if ($subscription && $subscription->get_type() === 'lm_subscription' && $subscription->get_meta('_dodo_trial_active') === 'yes') {
+            return $subscription;
+        }
+    }
+    return null;
+}
+
+/**
+ * Returns the gateway instance WooCommerce registered, if the subscription is paid with Dodo Payments.
+ *
+ * @since 1.2.1
+ * @param WC_Order $subscription
+ * @return Dodo_Payments_WC_Gateway|null
+ */
+function dodo_payments_get_gateway_for($subscription)
+{
+    // Check before loading gateways, so other payment methods pay nothing for this hook.
+    if (!$subscription || $subscription->get_payment_method() !== 'dodo_payments' || !function_exists('WC')) {
+        return null;
+    }
+
+    $gateway = WC()->payment_gateways()->payment_gateways()['dodo_payments'] ?? null;
+    if (!$gateway) {
+        wc_get_logger()->warning('Dodo Payments: gateway not found, subscription #' . $subscription->get_id() . ' change was not synced to Dodo Payments.', array('source' => 'dodo-payments'));
+    }
+
+    return $gateway;
 }
 
 /**

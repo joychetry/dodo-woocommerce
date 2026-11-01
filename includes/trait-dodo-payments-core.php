@@ -33,6 +33,9 @@ public function __construct()
         'subscription_cancellation',
         'subscription_suspension',
         'subscription_reactivation',
+        // Dodo bills renewals; stops WooCommerce Subscriptions from creating its own renewal
+        // order and putting the subscription on-hold (which would pause it in Dodo).
+        'gateway_scheduled_payments',
     );
 
     $this->enabled = $this->get_option('enabled');
@@ -99,16 +102,8 @@ public function __construct()
         add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_company_fields_script'));
     }
 
-    // Subscription-related actions
-    if (class_exists('WC_Subscriptions')) {
-        add_action('woocommerce_subscription_status_updated', array($this, 'handle_subscription_status_updated'), 10, 3);
-        add_action('woocommerce_subscription_dates_updated', array($this, 'handle_subscription_date_change'), 10, 2);
-    }
-
-    if (class_exists('LicenseMonks_Subscription')) {
-        add_action('licensemonks/subscription/status/updated', array($this, 'handle_lm_subscription_status_updated'), 10, 3);
-        // Date changes sync not supported for LM either yet
-    }
+    // Subscription sync hooks are registered at plugin level in dodo-payments-for-woocommerce.php,
+    // because the gateway is not instantiated on every request.
 }
 
 private function init_dodo_payments_api()
