@@ -16,9 +16,9 @@
  * Requires PHP: 7.4
  * Requires at least: 6.1
  * Requires Plugins: woocommerce
- * Tested up to: 6.9.1
+ * Tested up to: 7.1.4
  * WC requires at least: 7.9
- * WC tested up to: 10.5.2
+ * WC tested up to: 11.2.1
  */
 
 if (!defined('ABSPATH')) {
