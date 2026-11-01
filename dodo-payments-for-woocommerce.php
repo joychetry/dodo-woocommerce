@@ -93,6 +93,8 @@ add_action('woocommerce_blocks_loaded', function () {
     add_action('woocommerce_blocks_payment_method_type_registration', function ($registry) {
         $registry->register(new Dodo_Payments_Blocks());
     });
+    add_action('woocommerce_init', array('Dodo_Payments_Blocks', 'register_b2b_fields'));
+    add_action('woocommerce_store_api_checkout_update_order_from_request', array('Dodo_Payments_Blocks', 'copy_b2b_fields_to_order'));
 });
 
 add_action('plugins_loaded', 'dodo_payments_init');

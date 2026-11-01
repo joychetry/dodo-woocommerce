@@ -30,7 +30,6 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 
 == Does not Support ==
 
-- "Purchasing as a business" / Tax ID fields on block checkout (classic checkout only)
 - Fixed amount or custom discount codes
 
 == Frequently Asked Questions ==
