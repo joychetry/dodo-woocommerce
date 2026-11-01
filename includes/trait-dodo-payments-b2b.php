@@ -230,7 +230,7 @@ public function enqueue_checkout_company_fields_script()
         DODO_PAYMENTS_PLUGIN_URL . 'assets/js/dodo-checkout-company-fields.min.js',
         array('jquery'),
         '0.6.0',
-        true
+        array('in_footer' => true, 'strategy' => 'defer')
     );
 }
 

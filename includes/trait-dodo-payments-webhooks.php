@@ -576,11 +576,8 @@ private function handle_plan_changed_webhook($payload, $subscription)
             // Validate the pending change isn't stale (older than 1 hour)
             $timestamp = $pending_change['timestamp'] ?? '';
             if (!empty($timestamp)) {
-                $pending_time = strtotime($timestamp);
-                $current_time = current_time('timestamp');
-                $one_hour_ago = $current_time - HOUR_IN_SECONDS;
-
-                if ($pending_time < $one_hour_ago) {
+                // Stored as site-local time via current_time('mysql').
+                if ((int) get_gmt_from_date($timestamp, 'U') < time() - HOUR_IN_SECONDS) {
                     $this->log_debug('Stale plan change detected for order #' . $order->get_id() . ', skipping');
                     $order->delete_meta_data('_dodo_pending_plan_change');
                     $order->save();

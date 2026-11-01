@@ -145,7 +145,7 @@ public function enqueue_overlay_checkout_scripts()
         'https://cdn.jsdelivr.net/npm/dodopayments-checkout@latest/dist/index.js',
         array(),
         '1.0.0', // Version for cache busting - will be updated with SDK releases
-        true
+        array('in_footer' => true, 'strategy' => 'defer')
     );
 
     // Enqueue our overlay checkout script
@@ -154,7 +154,7 @@ public function enqueue_overlay_checkout_scripts()
         DODO_PAYMENTS_PLUGIN_URL . 'assets/js/dodo-checkout-overlay.min.js',
         array('dodo-payments-checkout-sdk', 'jquery'),
         '0.5.0',
-        true
+        array('in_footer' => true, 'strategy' => 'defer')
     );
 
     // Pass data to JavaScript
