@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    name: PHP ${{ matrix.php }} lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['7.4', '8.4'] # plugin minimum and current
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: none
+      - run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+
+  checks:
+    name: JS syntax and version sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: JS syntax
+        run: for f in assets/js/*.js; do node --check "$f"; done
+      - name: Version and requirements in sync
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          header() { sed -n "s/^ \* $1: *//p" dodo-payments-for-woocommerce.php | tr -d '\r'; }
+          v=$(header Version); wp=$(header 'Requires at least'); wc=$(header 'WC requires at least')
+          [ -n "$v" ] || fail "No Version in plugin header"
+          grep -qx "Stable tag: $v" readme.txt || fail "readme.txt Stable tag != $v"
+          grep -qx "Requires at least: $wp" readme.txt || fail "readme.txt Requires at least != $wp"
+          grep -qx "= $v =" readme.txt || fail "readme.txt changelog has no = $v = entry"
+          grep -q "version $v\$" changelog.txt || fail "changelog.txt has no version $v entry"
+          grep -qx -- "- WordPress $wp or higher" README.md || fail "README.md WordPress requirement != $wp"
+          grep -qx -- "- WooCommerce $wc or higher" README.md || fail "README.md WooCommerce requirement != $wc"
+          echo "OK: $v (WP $wp, WC $wc)"
