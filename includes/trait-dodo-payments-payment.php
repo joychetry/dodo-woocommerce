@@ -272,7 +272,7 @@ public function render_inline_checkout($order_id)
                 <tr data-dodo-row="discount"><th scope="row"><?php esc_html_e('Discount', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
                 <tr data-dodo-row="tax"><th scope="row"><?php esc_html_e('Tax', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
                 <tr data-dodo-row="total"><th scope="row"><?php esc_html_e('Total', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
-                <tr data-dodo-row="finalTotal"><th scope="row"><?php esc_html_e('Amount charged', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
+                <tr data-dodo-row="finalTotal"><th scope="row"><?php esc_html_e('Due today', 'dodo-payments-for-woocommerce'); ?></th><td></td></tr>
             </tbody>
         </table>
 

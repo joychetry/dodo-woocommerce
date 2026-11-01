@@ -58,6 +58,8 @@
             switch (eventType) {
                 case 'checkout.opened':
                     if (isInline) {
+                        // SDK 2.1.0 sends no checkout.form_ready, so the frame being loaded is the cue.
+                        $('#dodo-inline-checkout-loading').remove();
                         break;
                     }
                     // Overlay opened
