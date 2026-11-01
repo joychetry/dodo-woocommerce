@@ -2,11 +2,12 @@
 
 2026-11-01 - version 1.2.1
 * Fix: Cancelling a subscription from My Account now also cancels it in Dodo Payments, so customers are no longer charged after a trial
-* Fix: A subscription cancelled (or set to cancel at period end) before Dodo Payments activated it is cancelled in Dodo Payments on activation, instead of being reactivated
+* Fix: A subscription cancelled (or set to cancel at period end) before Dodo Payments activated it is cancelled in Dodo Payments when Dodo reports it active, instead of being reactivated
 * Fix: WooCommerce Subscriptions no longer creates its own renewal orders or puts Dodo subscriptions on hold at each renewal date
+* Fix: A Dodo Payments renewal advances the WooCommerce Subscriptions next payment date
 * Fix: A redelivered WooCommerce Subscriptions renewal payment no longer creates a second renewal order
 * Fix: Subscription changes made in wp-admin are no longer sent to Dodo Payments twice
-* Fix: A payment for a cancelled order or subscription puts the order on hold and emails the admin instead of completing it or creating a renewal
+* Fix: A payment for a cancelled order or subscription emails the admin instead of completing the order or creating a renewal
 * Fix: A redelivered payment webhook no longer moves a refunded order back to completed
 * Enhancement: Every handled webhook is logged with its type, webhook ID, payment, subscription and order IDs
 

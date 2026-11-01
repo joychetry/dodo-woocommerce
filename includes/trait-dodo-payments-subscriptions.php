@@ -18,26 +18,26 @@ trait DodoPaymentsSubscriptions
 {
 
 /**
- * Flags a cancellation made before Dodo linked the subscription (the link is saved on Dodo's
+ * Notes a cancellation made before Dodo linked the subscription (the link is saved on Dodo's
  * first webhook). The subscription.active webhook handler sends it to Dodo then.
  *
  * @param WC_Order $subscription WooCommerce or License Monks subscription.
- * @return void
+ * @return bool True: nothing can be sent yet.
  */
 private function defer_dodo_cancel($subscription)
 {
     $this->log_debug('Subscription #' . $subscription->get_id() . ' cancelled before a Dodo subscription was linked; deferred until it activates');
-    $subscription->update_meta_data('_dodo_pending_cancel', 'yes');
-    $subscription->save_meta_data();
     $subscription->add_order_note(__('Dodo Payments: no Dodo subscription is linked yet. If one activates, the cancellation will be sent to Dodo Payments then.', 'dodo-payments-for-woocommerce'));
+    return true;
 }
 
+/**
+ * Syncs a License Monks status change to Dodo. Called only for Dodo-paid subscriptions.
+ *
+ * @return bool|null Cancellation result (false: the Dodo API call failed), null for other statuses.
+ */
 public function handle_lm_subscription_status_updated($subscription, $new_status, $old_status)
 {
-    if ($subscription->get_payment_method() !== $this->id) {
-        return;
-    }
-
     // Strip wc- prefix if present for uniform matching
     $new_status = str_starts_with($new_status, 'wc-') ? substr($new_status, 3) : $new_status;
 
@@ -46,12 +46,10 @@ public function handle_lm_subscription_status_updated($subscription, $new_status
             $this->suspend_lm_subscription($subscription);
             break;
         case 'pending-cancel':
-            $this->cancel_lm_subscription_at_next_billing($subscription);
-            break;
+            return $this->cancel_lm_subscription_at_next_billing($subscription);
         case 'cancelled':
         case 'expired':
-            $this->cancel_lm_subscription($subscription);
-            break;
+            return $this->cancel_lm_subscription($subscription);
         case 'active':
             if (str_contains($old_status, 'on-hold')) {
                 $this->reactivate_lm_subscription($subscription);
@@ -85,13 +83,13 @@ private function cancel_lm_subscription($subscription)
 {
     $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
     if (!$dodo_subscription_id) {
-        $this->defer_dodo_cancel($subscription);
-        return;
+        return $this->defer_dodo_cancel($subscription);
     }
 
     try {
         $this->dodo_payments_api->cancel_subscription($dodo_subscription_id);
         $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
+        return true;
     } catch (\Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -100,6 +98,7 @@ private function cancel_lm_subscription($subscription)
                 $e->getMessage()
             )
         );
+        return false;
     }
 }
 
@@ -107,13 +106,13 @@ private function cancel_lm_subscription_at_next_billing($subscription)
 {
     $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
     if (!$dodo_subscription_id) {
-        $this->defer_dodo_cancel($subscription);
-        return;
+        return $this->defer_dodo_cancel($subscription);
     }
 
     try {
         $this->dodo_payments_api->cancel_subscription_at_next_billing_date($dodo_subscription_id);
         $subscription->add_order_note(__('Subscription set to cancel at end of billing cycle in Dodo Payments', 'dodo-payments-for-woocommerce'));
+        return true;
     } catch (\Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -122,6 +121,7 @@ private function cancel_lm_subscription_at_next_billing($subscription)
                 $e->getMessage()
             )
         );
+        return false;
     }
 }
 
@@ -146,26 +146,22 @@ private function reactivate_lm_subscription($subscription)
     }
 }
 
+/**
+ * Syncs a WooCommerce Subscriptions status change to Dodo. Called only for Dodo-paid subscriptions.
+ *
+ * @return bool|null Cancellation result (false: the Dodo API call failed), null for other statuses.
+ */
 public function handle_subscription_status_updated($subscription, $new_status, $old_status)
 {
-    if ($subscription->get_payment_method() !== $this->id) {
-        return;
-    }
-
     switch ($new_status) {
         case 'on-hold':
             $this->suspend_subscription($subscription);
             break;
         case 'pending-cancel':
-            $this->cancel_subscription_at_next_billing_date($subscription);
-            break;
+            return $this->cancel_subscription_at_next_billing_date($subscription);
         case 'cancelled':
-            $this->cancel_subscription($subscription);
-            break;
         case 'expired':
-            // When a subscription expires, we should also cancel it in Dodo Payments
-            $this->cancel_subscription($subscription);
-            break;
+            return $this->cancel_subscription($subscription);
         case 'active':
             if ($old_status === 'on-hold') {
                 $this->reactivate_subscription($subscription);
@@ -176,7 +172,8 @@ public function handle_subscription_status_updated($subscription, $new_status, $
 
 public function handle_subscription_date_change($subscription, $changed_dates)
 {
-    if ($subscription->get_payment_method() !== $this->id) {
+    // WooCommerce Subscriptions also updates dates itself (renewals, cancel at period end).
+    if (!doing_action('woocommerce_process_shop_order_meta')) {
         return;
     }
 
@@ -193,8 +190,7 @@ public function cancel_subscription($subscription)
     $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
 
     if (!$dodo_subscription_id) {
-        $this->defer_dodo_cancel($subscription);
-        return;
+        return $this->defer_dodo_cancel($subscription);
     }
 
     try {
@@ -206,6 +202,7 @@ public function cancel_subscription($subscription)
                 $dodo_subscription_id
             )
         );
+        return true;
     } catch (Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -214,6 +211,7 @@ public function cancel_subscription($subscription)
                 $e->getMessage()
             )
         );
+        return false;
     }
 }
 
@@ -229,8 +227,7 @@ public function cancel_subscription_at_next_billing_date($subscription)
     $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
 
     if (!$dodo_subscription_id) {
-        $this->defer_dodo_cancel($subscription);
-        return;
+        return $this->defer_dodo_cancel($subscription);
     }
 
     try {
@@ -242,6 +239,7 @@ public function cancel_subscription_at_next_billing_date($subscription)
                 $dodo_subscription_id
             )
         );
+        return true;
     } catch (Exception $e) {
         $subscription->add_order_note(
             sprintf(
@@ -250,6 +248,7 @@ public function cancel_subscription_at_next_billing_date($subscription)
                 $e->getMessage()
             )
         );
+        return false;
     }
 }
 

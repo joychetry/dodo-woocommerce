@@ -179,32 +179,19 @@ function dodo_payments_keep_trial_orders_pending($cancel, $order)
  *
  * @since 1.2.1
  */
-add_action('woocommerce_subscription_status_updated', 'dodo_payments_sync_subscription_status', 10, 3);
-function dodo_payments_sync_subscription_status($subscription, $new_status, $old_status)
-{
-    $gateway = dodo_payments_get_gateway_for($subscription);
-    if ($gateway) {
-        $gateway->handle_subscription_status_updated($subscription, $new_status, $old_status);
-    }
+foreach (array(
+    'woocommerce_subscription_status_updated' => 'handle_subscription_status_updated',
+    'woocommerce_subscription_dates_updated' => 'handle_subscription_date_change',
+    'licensemonks/subscription/status/updated' => 'handle_lm_subscription_status_updated',
+) as $dodo_payments_hook => $dodo_payments_method) {
+    add_action($dodo_payments_hook, function ($subscription, ...$args) use ($dodo_payments_method) {
+        $gateway = dodo_payments_get_gateway_for($subscription);
+        if ($gateway) {
+            $gateway->$dodo_payments_method($subscription, ...$args);
+        }
+    }, 10, 3);
 }
-
-add_action('woocommerce_subscription_dates_updated', 'dodo_payments_sync_subscription_dates', 10, 2);
-function dodo_payments_sync_subscription_dates($subscription, $changed_dates)
-{
-    $gateway = dodo_payments_get_gateway_for($subscription);
-    if ($gateway) {
-        $gateway->handle_subscription_date_change($subscription, $changed_dates);
-    }
-}
-
-add_action('licensemonks/subscription/status/updated', 'dodo_payments_sync_lm_subscription_status', 10, 3);
-function dodo_payments_sync_lm_subscription_status($subscription, $new_status, $old_status)
-{
-    $gateway = dodo_payments_get_gateway_for($subscription);
-    if ($gateway) {
-        $gateway->handle_lm_subscription_status_updated($subscription, $new_status, $old_status);
-    }
-}
+unset($dodo_payments_hook, $dodo_payments_method);
 
 /**
  * Returns the gateway instance WooCommerce registered, if the subscription is paid with Dodo Payments.
