@@ -41,6 +41,7 @@ Currently, we support credit card payments through Dodo Payment Gateway.
 == Changelog ==
 
 = 1.2.1 =
+* Fix: Overlay checkout on the classic checkout page opens again; the cart is now emptied after payment instead of before, so WooCommerce no longer sends the buyer to an empty cart
 * Fix: Cancelling a subscription from My Account now also cancels it in Dodo Payments, so customers are no longer charged after a trial
 * Fix: A subscription cancelled (or set to cancel at period end) before Dodo Payments activated it is cancelled in Dodo Payments when Dodo reports it active, instead of being reactivated
 * Fix: WooCommerce Subscriptions no longer creates its own renewal orders or puts Dodo subscriptions on hold at each renewal date
