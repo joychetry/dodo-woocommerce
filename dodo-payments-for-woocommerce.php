@@ -304,24 +304,17 @@ function dodo_payments_register_admin_invoice_hooks()
 }
 
 /**
- * Adds the Invoice column to the My Account orders table (frontend for customers).
+ * Adds an Invoice link to each order's actions in the My Account orders list.
  *
- * WC_Payment_Gateways only instantiates gateways lazily (Settings page, bulk actions, checkout),
- * so the My Account orders page — which renders wc_get_account_orders_columns() without touching
- * gateways — would otherwise render without the Invoice column. These plugin-level hooks delegate
- * to the gateway methods and instantiate the gateway lazily on first render.
+ * An action rather than a column: themes that override myaccount/orders.php (e.g. lm-theme)
+ * usually still print wc_get_account_orders_actions() but drop custom column hooks.
  *
- * @since 1.0.1
+ * @since 1.2.2
  */
-add_filter('woocommerce_account_orders_columns', 'dodo_payments_add_myaccount_invoice_column', 10, 1);
-function dodo_payments_add_myaccount_invoice_column($columns)
-{
-    static $gateway = null;
-    if (null === $gateway) {
-        $gateway = new Dodo_Payments_WC_Gateway();
-    }
-    return $gateway->add_myaccount_invoice_column($columns);
-}
+add_filter('woocommerce_my_account_my_orders_actions', function ($actions, $order) {
+    $gateway = dodo_payments_get_gateway_for($order);
+    return $gateway ? $gateway->add_myaccount_invoice_action($actions, $order) : $actions;
+}, 10, 2);
 
 // Invoice section on the customer's view-order and order-received pages. Hooked to the page
 // actions, not woocommerce_order_details_after_order_table: themes that replace the order
@@ -336,13 +329,3 @@ foreach (array('woocommerce_view_order', 'woocommerce_thankyou') as $dodo_paymen
     }, 20, 1);
 }
 unset($dodo_payments_hook);
-
-add_action('woocommerce_my_account_my_orders_column_invoice', 'dodo_payments_render_myaccount_invoice_column', 10, 1);
-function dodo_payments_render_myaccount_invoice_column($order)
-{
-    static $gateway = null;
-    if (null === $gateway) {
-        $gateway = new Dodo_Payments_WC_Gateway();
-    }
-    $gateway->render_myaccount_invoice_column($order);
-}

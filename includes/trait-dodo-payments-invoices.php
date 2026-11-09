@@ -104,53 +104,26 @@ public function download_invoice()
 }
 
 /**
- * Adds invoice column to My Account orders table
+ * Adds an Invoice link to an order's actions in the My Account orders list.
  *
- * @param array $columns Existing columns.
- * @return array Modified columns.
- * @since 0.5.0
+ * @param array    $actions Existing order actions.
+ * @param WC_Order $order   The order.
+ * @return array Modified actions.
+ * @since 1.2.2
  */
-public function add_myaccount_invoice_column($columns)
+public function add_myaccount_invoice_action($actions, $order)
 {
-    $columns['invoice'] = __('Invoice', 'dodo-payments-for-woocommerce');
-    return $columns;
-}
-
-/**
- * Renders invoice column content in My Account orders table
- *
- * Note: This action receives order ID (not WC_Order object) in WooCommerce.
- *
- * @param mixed $order_or_order_id The order object or order ID.
- * @return void
- * @since 0.5.0
- */
-public function render_myaccount_invoice_column($order_or_order_id)
-{
-    // Handle both order object and order ID for compatibility
-    if (!is_object($order_or_order_id)) {
-        $order = wc_get_order($order_or_order_id);
-    } else {
-        $order = $order_or_order_id;
-    }
-
-    if (!$order instanceof WC_Order) {
-        return;
-    }
-
-    // Only show for Dodo Payments orders
-    if ($order->get_payment_method() !== $this->id) {
-        return;
-    }
-
     $invoice_helper = new Dodo_Payments_Invoice($this->dodo_payments_api);
     $invoice_url = $invoice_helper->get_invoice_url($order);
 
     if ($invoice_url) {
-        echo '<a href="' . esc_url($invoice_url) . '" target="_blank" class="button button-small" title="' . esc_attr__('View Invoice', 'dodo-payments-for-woocommerce') . '">';
-        echo esc_html__('View', 'dodo-payments-for-woocommerce');
-        echo '</a>';
+        $actions['invoice'] = array(
+            'url'  => $invoice_url,
+            'name' => __('Invoice', 'dodo-payments-for-woocommerce'),
+        );
     }
+
+    return $actions;
 }
 
 /**
