@@ -323,6 +323,20 @@ function dodo_payments_add_myaccount_invoice_column($columns)
     return $gateway->add_myaccount_invoice_column($columns);
 }
 
+// Invoice section on the customer's view-order and order-received pages. Hooked to the page
+// actions, not woocommerce_order_details_after_order_table: themes that replace the order
+// details table (e.g. lm-theme's view-order.php) never fire that one.
+foreach (array('woocommerce_view_order', 'woocommerce_thankyou') as $dodo_payments_hook) {
+    add_action($dodo_payments_hook, function ($order_id) {
+        $order = wc_get_order($order_id);
+        $gateway = $order ? dodo_payments_get_gateway_for($order) : null;
+        if ($gateway) {
+            $gateway->display_invoice_link($order);
+        }
+    }, 20, 1);
+}
+unset($dodo_payments_hook);
+
 add_action('woocommerce_my_account_my_orders_column_invoice', 'dodo_payments_render_myaccount_invoice_column', 10, 1);
 function dodo_payments_render_myaccount_invoice_column($order)
 {

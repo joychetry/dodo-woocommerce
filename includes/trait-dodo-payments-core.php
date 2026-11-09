@@ -67,17 +67,12 @@ public function __construct()
     // webhook to http://<site-host>/wc-api/dodo_payments
     add_action('woocommerce_api_' . $this->id, array($this, 'webhook'));
 
-    // Invoice display in My Account
-    add_action('woocommerce_order_details_after_order_table', array($this, 'display_invoice_link'), 10, 1);
     add_action('init', array($this, 'maybe_flush_rewrite_rules'));
 
-    // Invoice display in My Account orders table (frontend for customers) is registered at
-    // plugin level in dodo-payments-for-woocommerce.php — NOT here. The constructor would
-    // double-register those hooks whenever the gateway is instantiated (e.g. on checkout),
-    // rendering the Invoice column twice.
-
-    // Invoice display in admin (HPOS compatible)
-    add_action('admin_init', array($this, 'add_admin_invoice_hooks'));
+    // All invoice display hooks (order details, My Account column, admin) are registered at
+    // plugin level in dodo-payments-for-woocommerce.php — NOT here. Gateways load lazily, so
+    // constructor hooks miss pages like view-order, and double-register (rendering invoice
+    // sections twice) when more than one instance exists.
 
     // Overlay checkout scripts
     add_action('wp_enqueue_scripts', array($this, 'enqueue_overlay_checkout_scripts'));
