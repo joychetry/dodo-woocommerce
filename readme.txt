@@ -3,7 +3,7 @@ Contributors: ayushdodopayments
 Tags: payments, woocommerce, dodo
 Requires at least: 7.1
 Tested up to: 7.1
-Stable tag: 1.2.1
+Stable tag: 1.2.2
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,10 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 1.2.2 =
+* Fix: The invoice section shows once on the admin order page and appears on the customer's order page even when the theme replaces the order details table
+* New: An "Invoice" action in the My Account orders list, which also works with themes that override the orders template
 
 = 1.2.1 =
 * Fix: Overlay checkout on the classic checkout page opens again; the cart is now emptied after payment instead of before, so WooCommerce no longer sends the buyer to an empty cart

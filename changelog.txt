@@ -1,5 +1,9 @@
 *** Dodo Payments for WooCommerce Changelog ***
 
+2026-11-10 - version 1.2.2
+* Fix: The invoice section shows once on the admin order page and appears on the customer's order page even when the theme replaces the order details table
+* New: An "Invoice" action in the My Account orders list, which also works with themes that override the orders template
+
 2026-11-01 - version 1.2.1
 * Fix: Invoice links keep working after Dodo Payments requires authentication for invoices (November 27, 2026): the plugin now downloads the invoice PDF with the API key and serves it only to the order's customer and shop managers, instead of linking to the deprecated public invoice_url
 * Fix: Overlay checkout on the classic checkout page opens again; the cart is now emptied after payment instead of before, so WooCommerce no longer sends the buyer to an empty cart
