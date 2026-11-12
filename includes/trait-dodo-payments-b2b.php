@@ -119,8 +119,8 @@ public function add_buy_as_company_fields()
         }
         
         /* Hide company name and tax ID fields initially */
-        #custom_company_name_field { display: none; margin-top: -12px; }
-        #dodo_tax_id_field { display: none; margin-top: -8px; }
+        #custom_company_name_field { display: none;}
+        #dodo_tax_id_field { display: none;}
         /* Hide the (optional) suffix on our fields */
         #dodo_tax_id_field .optional, #custom_company_name_field .optional { display: none; }
         .dodo-tax-id-info { display: none; }
