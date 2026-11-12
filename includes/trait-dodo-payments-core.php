@@ -46,6 +46,7 @@ public function __construct()
     $this->testmode = 'yes' === $this->get_option('testmode');
     $this->api_key = $this->testmode ? $this->get_option('test_api_key') : $this->get_option('live_api_key');
     $this->webhook_key = $this->testmode ? $this->get_option('test_webhook_key') : $this->get_option('live_webhook_key');
+    $this->brand_id = $this->testmode ? $this->get_option('test_brand_id') : $this->get_option('live_brand_id');
 
     $this->global_tax_category = $this->get_option('global_tax_category');
     $this->global_tax_inclusive = 'yes' === $this->get_option('global_tax_inclusive');
@@ -107,7 +108,55 @@ private function init_dodo_payments_api()
         'api_key' => $this->api_key,
         'global_tax_category' => $this->global_tax_category,
         'global_tax_inclusive' => $this->global_tax_inclusive,
+        'brand_id' => $this->brand_id,
     ));
+}
+
+/**
+ * Builds the brand dropdown options for one mode from that mode's API key.
+ *
+ * Only calls the API on this gateway's settings screen, since the gateway (and its form
+ * fields) is constructed on checkout requests too. The saved brand is always kept as an
+ * option so a failed or keyless lookup can't silently reset it on save.
+ *
+ * @param bool $testmode Whether to list test mode brands.
+ * @return array<string, string> Brand ID => label.
+ */
+private function get_brand_options($testmode)
+{
+    $api_key = $this->get_option($testmode ? 'test_api_key' : 'live_api_key');
+    $saved = $this->get_option($testmode ? 'test_brand_id' : 'live_brand_id');
+
+    $options = array('' => __('Not set (Dodo default: primary brand)', 'dodo-payments-for-woocommerce'));
+    if ('' !== $saved) {
+        $options[$saved] = $saved;
+    }
+
+    // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only screen check.
+    $on_settings_screen = is_admin() && isset($_GET['page'], $_GET['section']) && 'wc-settings' === $_GET['page'] && $this->id === $_GET['section'];
+    if ('' === $api_key || !$on_settings_screen) {
+        return $options;
+    }
+
+    $api = new Dodo_Payments_API(array(
+        'testmode' => $testmode,
+        'api_key' => $api_key,
+        'global_tax_category' => $this->global_tax_category,
+        'global_tax_inclusive' => $this->global_tax_inclusive,
+    ));
+
+    foreach ((array) $api->list_brands() as $brand) {
+        if (empty($brand['brand_id']) || (empty($brand['enabled']) && $brand['brand_id'] !== $saved)) {
+            continue;
+        }
+        $label = !empty($brand['name']) ? $brand['name'] : $brand['brand_id'];
+        if (isset($brand['business_id']) && $brand['brand_id'] === $brand['business_id']) {
+            $label .= ' ' . __('(primary)', 'dodo-payments-for-woocommerce');
+        }
+        $options[$brand['brand_id']] = $label . ' — ' . $brand['brand_id'];
+    }
+
+    return $options;
 }
 
 /**
@@ -218,6 +267,22 @@ public function init_form_fields()
             'default' => 'no',
             'desc_tip' => false,
             'description' => __('Select if tax is included on all product prices. You can override this on a per-product basis on Dodo Payments Dashboard.', 'dodo-payments-for-woocommerce'),
+        ),
+        'live_brand_id' => array(
+            'title' => __('Live Brand', 'dodo-payments-for-woocommerce'),
+            'type' => 'select',
+            'options' => $this->get_brand_options(false),
+            'default' => '',
+            'desc_tip' => false,
+            'description' => __('Products are created and updated under this brand, and orders take the brand of their products. Existing products move to it the next time they are bought; live subscriptions keep their current brand. Save the Live API Key to load the brand list.', 'dodo-payments-for-woocommerce'),
+        ),
+        'test_brand_id' => array(
+            'title' => __('Test Brand', 'dodo-payments-for-woocommerce'),
+            'type' => 'select',
+            'options' => $this->get_brand_options(true),
+            'default' => '',
+            'desc_tip' => false,
+            'description' => __('Brand used in test mode. Save the Test API Key to load the brand list.', 'dodo-payments-for-woocommerce'),
         ),
         'enable_tax_id_collection' => array(
             'title' => __('Enable Tax ID Collection', 'dodo-payments-for-woocommerce'),

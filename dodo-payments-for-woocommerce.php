@@ -108,6 +108,7 @@ class Dodo_Payments_WC_Gateway extends WC_Payment_Gateway
                     private bool $testmode;
                     private string $api_key;
                     private string $webhook_key;
+                    private string $brand_id;
 
                     protected Dodo_Payments_API $dodo_payments_api;
 

@@ -14,11 +14,16 @@ class Dodo_Payments_API
      * @var bool
      */
     private bool $global_tax_inclusive;
+    /**
+     * Brand that products are created and updated under. Empty leaves the brand to Dodo.
+     * @var string
+     */
+    private string $brand_id;
 
     /**
      * Initializes the Dodo_Payments_API instance with configuration options.
      *
-     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool} $options Configuration options for API access and behavior.
+     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string} $options Configuration options for API access and behavior.
      */
     public function __construct($options)
     {
@@ -26,6 +31,51 @@ class Dodo_Payments_API
         $this->api_key = $options['api_key'];
         $this->global_tax_category = $options['global_tax_category'];
         $this->global_tax_inclusive = $options['global_tax_inclusive'];
+        $this->brand_id = (string) ($options['brand_id'] ?? '');
+    }
+
+    /**
+     * Adds the configured brand to a product request body.
+     *
+     * Payments, subscriptions and checkout sessions have no brand field: they inherit the brand
+     * of their products, so setting it on products is what files orders under the brand.
+     *
+     * @param array $body Product create or update request body.
+     * @return array The body, with brand_id when a brand is configured.
+     */
+    private function with_brand($body)
+    {
+        if ('' !== $this->brand_id) {
+            $body['brand_id'] = $this->brand_id;
+        }
+
+        return $body;
+    }
+
+    /**
+     * Lists the business's brands, including the primary brand (whose ID is the business ID).
+     *
+     * Archived brands are excluded by the API.
+     *
+     * @return array<array{brand_id: string, business_id: string, name: ?string, enabled: bool}>|false Brands, or false on error.
+     */
+    public function list_brands()
+    {
+        $res = $this->get('/brands');
+
+        if (is_wp_error($res)) {
+            $this->log_debug('Failed to list brands: ' . $res->get_error_message());
+            return false;
+        }
+
+        if (wp_remote_retrieve_response_code($res) !== 200) {
+            $this->log_debug('Failed to list brands: ' . wp_remote_retrieve_body($res));
+            return false;
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($res), true);
+
+        return isset($body['items']) && is_array($body['items']) ? $body['items'] : array();
     }
 
     /**
@@ -116,7 +166,7 @@ class Dodo_Payments_API
             'tax_category' => $this->global_tax_category,
         );
 
-        $res = $this->post('/products', $body);
+        $res = $this->post('/products', $this->with_brand($body));
 
         if (is_wp_error($res)) {
             throw new Exception('Failed to create product: ' . esc_html($res->get_error_message()));
@@ -165,7 +215,7 @@ class Dodo_Payments_API
             'tax_category' => $dodo_product['tax_category'],
         );
 
-        $res = $this->patch("/products/{$dodo_product_id}", $body);
+        $res = $this->patch("/products/{$dodo_product_id}", $this->with_brand($body));
 
         if (is_wp_error($res)) {
             throw new Exception("Failed to update product: " . esc_html($res->get_error_message()));
@@ -896,7 +946,7 @@ class Dodo_Payments_API
             'tax_category' => $this->global_tax_category,
         );
 
-        $res = $this->post('/products', $body);
+        $res = $this->post('/products', $this->with_brand($body));
 
         if (is_wp_error($res)) {
             throw new Exception('Failed to create subscription product: ' . esc_html($res->get_error_message()));
@@ -1042,7 +1092,7 @@ class Dodo_Payments_API
             'tax_category' => $dodo_product['tax_category'],
         );
 
-        $res = $this->patch("/products/{$dodo_product_id}", $body);
+        $res = $this->patch("/products/{$dodo_product_id}", $this->with_brand($body));
 
         if (is_wp_error($res)) {
             throw new Exception('Failed to update subscription product: ' . esc_html($res->get_error_message()));
@@ -1481,7 +1531,7 @@ class Dodo_Payments_API
             'tax_category' => $this->global_tax_category,
         );
 
-        $res = $this->post('/products', $body);
+        $res = $this->post('/products', $this->with_brand($body));
 
         if (is_wp_error($res)) {
             throw new Exception('Failed to create upgrade product: ' . esc_html($res->get_error_message()));
