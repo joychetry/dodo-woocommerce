@@ -17,6 +17,9 @@ if (!defined('ABSPATH')) {
 trait DodoPaymentsSubscriptions
 {
 
+/** @var string Status being applied because Dodo already has it (a cancelled or expired webhook, a kept scheduled cancellation). */
+private $applying_dodo_status = '';
+
 /**
  * Notes a cancellation made before Dodo linked the subscription (the link is saved on Dodo's
  * first webhook). The subscription.active webhook handler sends it to Dodo then.
@@ -57,20 +60,68 @@ public function handle_lm_subscription_status_updated($subscription, $new_status
         case 'active':
             if (str_contains($old_status, 'on-hold')) {
                 $this->reactivate_lm_subscription($subscription);
+            } elseif (str_contains($old_status, 'pending-cancel')) {
+                $this->undo_scheduled_cancel($subscription);
             }
             break;
     }
 }
 
 /**
- * Whether a hold or reactivation is being applied from a Dodo webhook, so it must not be sent back.
+ * Removes the cancellation scheduled in Dodo when a pending cancellation is reverted,
+ * so Dodo does not cancel at the period end anyway.
  *
- * Sending it back races Dodo: after a failed charge Dodo still reports "active" for a moment, and
- * pausing it then turns its on_hold (customer can pay the dues) into paused. Cancellations still
- * go through: the webhook handler relies on them to resend a cancellation Dodo missed.
+ * @param WC_Order $subscription WooCommerce or License Monks subscription.
+ */
+private function undo_scheduled_cancel($subscription)
+{
+    $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+    if (!$dodo_subscription_id) {
+        return;
+    }
+
+    try {
+        $this->dodo_payments_api->cancel_subscription_at_next_billing_date($dodo_subscription_id, false);
+        $subscription->add_order_note(__('Scheduled cancellation removed in Dodo Payments', 'dodo-payments-for-woocommerce'));
+    } catch (\Exception $e) {
+        // Dodo still ends it at the period end: show that instead of an active subscription. Reactivating again retries.
+        $this->applying_dodo_status = 'pending-cancel';
+        try {
+            $subscription->update_status(
+                'pending-cancel',
+                sprintf(
+                    // translators: %1$s: Error message
+                    __('Failed to remove the scheduled cancellation in Dodo Payments, so the subscription still ends at the period end. Reactivate it again to retry. Error: %1$s', 'dodo-payments-for-woocommerce'),
+                    $e->getMessage()
+                )
+            );
+        } catch (\Exception $revert_error) {
+            $subscription->add_order_note(
+                sprintf(
+                    // translators: %1$s: Error message
+                    __('Failed to remove the scheduled cancellation in Dodo Payments; it still ends at the period end: %1$s', 'dodo-payments-for-woocommerce'),
+                    $e->getMessage()
+                )
+            );
+        } finally {
+            $this->applying_dodo_status = '';
+        }
+    }
+}
+
+/**
+ * Whether a status change came from Dodo, so it must not be sent back.
+ *
+ * Holds and reactivations from a webhook: sending them back races Dodo, because after a failed charge
+ * Dodo still reports "active" for a moment, and pausing it then turns its on_hold (customer can pay
+ * the dues) into paused. Also a cancellation or expiry Dodo reported, which Dodo would reject.
+ * Other cancellations go through: the webhook handler relies on them to resend one Dodo missed.
  */
 private function is_dodo_status_echo($new_status)
 {
+    if ($new_status === $this->applying_dodo_status) {
+        return true;
+    }
     return in_array($new_status, array('on-hold', 'active'), true) && doing_action('woocommerce_api_' . $this->id);
 }
 
@@ -187,6 +238,8 @@ public function handle_subscription_status_updated($subscription, $new_status, $
         case 'active':
             if ($old_status === 'on-hold') {
                 $this->reactivate_subscription($subscription);
+            } elseif ($old_status === 'pending-cancel') {
+                $this->undo_scheduled_cancel($subscription);
             }
             break;
     }
