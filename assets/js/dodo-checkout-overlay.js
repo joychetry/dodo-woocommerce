@@ -67,6 +67,13 @@
                 case 'checkout.closed':
                     // Overlay closed
                     $('body').removeClass('dodo-checkout-overlay-open');
+                    // Drop the session from the URL so a reload does not reopen this pop-up
+                    // over a cart the customer may change next.
+                    if (window.history && window.history.replaceState) {
+                        var url = new URL(window.location.href);
+                        url.searchParams.delete('dodo_checkout_session_url');
+                        window.history.replaceState(null, '', url.toString());
+                    }
                     break;
 
                 case 'checkout.payment_page_opened':

@@ -345,7 +345,7 @@ class Dodo_Payments_Checkout_Settings
                     'custom' => __('Send a custom URL', 'dodo-payments-for-woocommerce'),
                     'none' => __('Do not send a cancel URL', 'dodo-payments-for-woocommerce'),
                 ),
-                'description' => __('Customers who abandon the hosted checkout are sent here. The order pay page lets them retry payment on the same order. Cancelling the order instead restores the items to the cart, but its link carries a WooCommerce security token that expires after about a day, so a customer returning later than that lands on an expired link.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Customers who abandon the hosted checkout are sent here. Not used by Overlay Checkout, which has a close button instead. The order pay page lets them retry payment on the same order. Cancelling the order instead restores the items to the cart, but its link carries a WooCommerce security token that expires after about a day, so a customer returning later than that lands on an expired link.', 'dodo-payments-for-woocommerce'),
             ),
         );
 
@@ -384,7 +384,7 @@ class Dodo_Payments_Checkout_Settings
                     'dark' => __('Dark', 'dodo-payments-for-woocommerce'),
                     'system' => __('Match the customer\'s device', 'dodo-payments-for-woocommerce'),
                 ),
-                'description' => __('Colour scheme the hosted checkout renders in.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Colour scheme the hosted checkout renders in. Overlay Checkout does not follow this setting.', 'dodo-payments-for-woocommerce'),
             ),
         );
 

@@ -78,34 +78,17 @@ public function enqueue_overlay_checkout_scripts()
         return;
     }
 
-    // Check if we have a checkout session URL from multiple sources
+    // Open the overlay only for the session in the URL, i.e. right after "Place order".
+    // Reopening a saved session on later visits showed an abandoned order's pop-up (and its
+    // old total) over a cart the customer had since changed.
     $checkout_session_url = null;
-    
-    // Priority 1: Check URL parameter (for redirect back to checkout)
+
     if (isset($_GET['dodo_checkout_session_url'])) {
         $url = esc_url_raw(wp_unslash($_GET['dodo_checkout_session_url']), array('https'));
         $host = (string) wp_parse_url($url, PHP_URL_HOST);
         // Only Dodo-hosted checkout pages may be opened in the overlay.
         if ('dodopayments.com' === $host || str_ends_with($host, '.dodopayments.com')) {
             $checkout_session_url = $url;
-            WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
-        }
-    }
-
-    // Priority 2: Check WooCommerce session (stored during payment processing)
-    if (!$checkout_session_url) {
-        $checkout_session_url = WC()->session->get('dodo_checkout_session_url');
-    }
-
-    // Priority 3: Try to get from order being processed
-    if (!$checkout_session_url && WC()->session->get('order_awaiting_payment')) {
-        $order = wc_get_order(WC()->session->get('order_awaiting_payment'));
-        if ($order && $order->get_payment_method() === $this->id) {
-            $checkout_session_url = $order->get_meta('_dodo_checkout_session_url');
-            // Store in session for next page load
-            if ($checkout_session_url) {
-                WC()->session->set('dodo_checkout_session_url', $checkout_session_url);
-            }
         }
     }
 
@@ -149,7 +132,8 @@ public function enqueue_overlay_checkout_scripts()
         'dodo-checkout-overlay',
         DODO_PAYMENTS_PLUGIN_URL . 'assets/js/dodo-checkout-overlay.min.js',
         array('dodo-payments-checkout-sdk', 'jquery'),
-        '0.5.0',
+        // filemtime, so a changed script is never served from the browser cache.
+        (string) filemtime(DODO_PAYMENTS_PLUGIN_DIR . 'assets/js/dodo-checkout-overlay.min.js'),
         array('in_footer' => true, 'strategy' => 'defer')
     );
 
@@ -542,11 +526,6 @@ public function do_payment($order)
             if ($this->opens_overlay_checkout()) {
                 $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
                 $order->save();
-
-                // Store checkout session URL in WooCommerce session for script enqueue
-                if (WC()->session) {
-                    WC()->session->set('dodo_checkout_session_url', $response['checkout_url']);
-                }
 
                 $order->add_order_note(
                     sprintf(
