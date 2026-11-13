@@ -50,6 +50,7 @@ require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-subscripti
 
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-cart-exception.php';
 
+require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-checkout-settings.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-api.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-standard-webhook.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-invoice.php';

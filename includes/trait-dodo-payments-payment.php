@@ -470,14 +470,24 @@ public function do_payment($order)
                 (bool) ($order->get_total() > 0 && $already_in_dodo && $contains_subscription),
                 $order
             );
+            $prefix = Dodo_Payments_Checkout_Settings::PREFIX;
             $response = $this->dodo_payments_api->create_checkout_session(
                 $order,
                 $synced_products,
                 $dodo_discount_code,
-                $this->get_return_url($order),
+                Dodo_Payments_Checkout_Settings::resolve_return_url(
+                    $this->get_option($prefix . 'return_url'),
+                    $this->get_return_url($order),
+                    $order
+                ),
                 $this->enable_tax_id_collection,
                 null,
-                $skip_trial
+                $skip_trial,
+                Dodo_Payments_Checkout_Settings::resolve_cancel_url(
+                    $this->get_option($prefix . 'cancel_url_mode'),
+                    $this->get_option($prefix . 'cancel_url_custom'),
+                    $order
+                )
             );
         } else {
             $response = $contains_subscription

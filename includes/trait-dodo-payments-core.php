@@ -109,6 +109,8 @@ private function init_dodo_payments_api()
         'global_tax_category' => $this->global_tax_category,
         'global_tax_inclusive' => $this->global_tax_inclusive,
         'brand_id' => $this->brand_id,
+        'checkout_options' => Dodo_Payments_Checkout_Settings::build_request_options(array($this, 'get_option')),
+        'feature_flags' => Dodo_Payments_Checkout_Settings::feature_flag_overrides(array($this, 'get_option')),
     ));
 }
 
@@ -305,10 +307,18 @@ public function init_form_fields()
             'desc_tip' => false,
             'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
         ),
-        'webhook_endpoint' => array(
-            'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
-            'type' => 'title',
-            'description' => $webhook_help_description,
+    );
+
+    // Checkout Session options and feature flags, then the webhook URL last as before.
+    $this->form_fields = array_merge(
+        $this->form_fields,
+        Dodo_Payments_Checkout_Settings::form_fields(),
+        array(
+            'webhook_endpoint' => array(
+                'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
+                'type' => 'title',
+                'description' => $webhook_help_description,
+            ),
         )
     );
 }

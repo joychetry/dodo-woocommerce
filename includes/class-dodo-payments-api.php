@@ -21,9 +21,23 @@ class Dodo_Payments_API
     private string $brand_id;
 
     /**
+     * Store-wide Checkout Session options from the settings page, already in request shape.
+     *
+     * @var array<string, mixed>
+     */
+    private array $checkout_options;
+
+    /**
+     * Checkout Session feature flags the merchant explicitly set on the settings page.
+     *
+     * @var array<string, bool>
+     */
+    private array $feature_flags;
+
+    /**
      * Initializes the Dodo_Payments_API instance with configuration options.
      *
-     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string} $options Configuration options for API access and behavior.
+     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string, checkout_options?: array<string, mixed>, feature_flags?: array<string, bool>} $options Configuration options for API access and behavior.
      */
     public function __construct($options)
     {
@@ -32,6 +46,8 @@ class Dodo_Payments_API
         $this->global_tax_category = $options['global_tax_category'];
         $this->global_tax_inclusive = $options['global_tax_inclusive'];
         $this->brand_id = (string) ($options['brand_id'] ?? '');
+        $this->checkout_options = (array) ($options['checkout_options'] ?? array());
+        $this->feature_flags = (array) ($options['feature_flags'] ?? array());
     }
 
     /**
@@ -284,10 +300,12 @@ class Dodo_Payments_API
      * @param string $return_url URL to redirect the customer after payment completion.
      * @param bool $enable_tax_id_collection Whether to enable tax ID collection on the checkout page.
      * @param array<string>|null $allowed_payment_method_types Optional array of allowed payment method types. If null, all eligible methods are available.
+     * @param bool $skip_trial Whether to charge the first cycle now instead of starting the product's trial.
+     * @param string|null $cancel_url Where the hosted checkout's back button leads. Null hides the button.
      * @throws \Exception If the API request fails or returns an error.
      * @return array{session_id: string, checkout_url: string} The created checkout session's ID and URL.
      */
-    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null, $skip_trial = false)
+    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null, $skip_trial = false, $cancel_url = null)
     {
         // Get company name information
         $default_company_name = $order->get_billing_company();
@@ -350,6 +368,10 @@ class Dodo_Payments_API
             }
         }
 
+        if ($cancel_url) {
+            $request['cancel_url'] = $cancel_url;
+        }
+
         // Add discount code if provided
         if ($dodo_discount_code) {
             $request['discount_code'] = $dodo_discount_code;
@@ -383,7 +405,30 @@ class Dodo_Payments_API
             $feature_flags['allow_customer_editing_business_name'] = true;
         }
 
-        $request['feature_flags'] = $feature_flags;
+        // Flags the merchant set on the settings page override the plugin's own choices above.
+        $feature_flags = array_merge($feature_flags, $this->feature_flags);
+
+        // ...except where that would produce a request Dodo rejects.
+        if ($dodo_discount_code) {
+            $feature_flags['allow_discount_code'] = true;
+        }
+        if (!empty($feature_flags['require_phone_number'])) {
+            $feature_flags['allow_phone_number_collection'] = true;
+        }
+        if (!empty($feature_flags['require_tax_id'])) {
+            $feature_flags['allow_tax_id'] = true;
+        }
+
+        /**
+         * Filters the Checkout Session feature flags before the session is created.
+         *
+         * @param array<string, bool> $feature_flags Flags about to be sent.
+         * @param WC_Order $order The order the checkout session is for.
+         *
+         * @since 1.3.0
+         */
+        $filtered_flags = apply_filters('dodo_payments_checkout_session_feature_flags', $feature_flags, $order);
+        $request['feature_flags'] = is_array($filtered_flags) ? $filtered_flags : $feature_flags;
 
         // Skip-trial: subscription sessions that must charge the full first cycle now.
         // trial_period_days is the documented per-subscription override; 0 disables the product's trial.
@@ -419,6 +464,41 @@ class Dodo_Payments_API
         // Add allowed payment method types if specified
         if ($allowed_payment_method_types !== null && !empty($allowed_payment_method_types)) {
             $request['allowed_payment_method_types'] = $allowed_payment_method_types;
+        }
+
+        // Store-wide options from the settings page go in underneath: anything derived
+        // from the order itself wins over a store-wide setting.
+        $request = array_merge($this->checkout_options, $request);
+
+        // `confirm` makes Dodo settle every detail up front, so a missing billing field is a
+        // rejected session instead of a prompt on the hosted page. Dodo's error does not name
+        // the field, so check first and say which ones are missing.
+        if (!empty($request['confirm'])) {
+            $missing = Dodo_Payments_Checkout_Settings::missing_confirm_fields($order, !empty($request['minimal_address']));
+
+            if (!empty($missing)) {
+                throw new Exception(esc_html(sprintf(
+                    /* translators: %s: comma-separated list of missing billing fields */
+                    __('Failed to create checkout session: "Finalise Details At Checkout" is enabled but the order is missing %s. Either collect these fields at your WooCommerce checkout or disable that setting.', 'dodo-payments-for-woocommerce'),
+                    implode(', ', $missing)
+                )));
+            }
+        }
+
+        /**
+         * Filters the complete Checkout Session request body before it is sent.
+         *
+         * An escape hatch for the Checkout Sessions fields the settings page does not
+         * expose, and for per-order overrides of the ones it does.
+         *
+         * @param array<string, mixed> $request The request body.
+         * @param WC_Order $order The order the checkout session is for.
+         *
+         * @since 1.3.0
+         */
+        $filtered_request = apply_filters('dodo_payments_checkout_session_request', $request, $order);
+        if (is_array($filtered_request) && !empty($filtered_request)) {
+            $request = $filtered_request;
         }
 
         $res = $this->post('/checkouts', $request);
