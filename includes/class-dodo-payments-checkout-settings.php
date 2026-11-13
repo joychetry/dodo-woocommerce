@@ -1353,8 +1353,21 @@ class Dodo_Payments_Checkout_Settings
     const FLAG_PREFIX = 'feature_flag_';
 
     /**
+     * The API has one editing flag per address field. The settings page offers them as a
+     * single "Customer Can Edit Billing Address" switch, which sets all of these together.
+     */
+    const ADDRESS_FLAGS = array(
+        'allow_customer_editing_country',
+        'allow_customer_editing_state',
+        'allow_customer_editing_city',
+        'allow_customer_editing_street',
+        'allow_customer_editing_zipcode',
+    );
+
+    /**
      * The Checkout Session `feature_flags` the settings page exposes, keyed by
-     * the exact API field name.
+     * the exact API field name. The one exception is
+     * `allow_customer_editing_billing_address`, which stands for ADDRESS_FLAGS.
      *
      * `default` is the hint shown for the "Default" choice. For most flags that
      * is the API's own default, because the flag is simply not sent. The plugin
@@ -1434,11 +1447,8 @@ class Dodo_Payments_Checkout_Settings
             'name' => __('Name', 'dodo-payments-for-woocommerce'),
             'business_name' => __('Business Name', 'dodo-payments-for-woocommerce'),
             'tax_id' => __('Tax ID', 'dodo-payments-for-woocommerce'),
-            'country' => __('Country', 'dodo-payments-for-woocommerce'),
-            'state' => __('State', 'dodo-payments-for-woocommerce'),
-            'city' => __('City', 'dodo-payments-for-woocommerce'),
-            'street' => __('Street', 'dodo-payments-for-woocommerce'),
-            'zipcode' => __('Zipcode', 'dodo-payments-for-woocommerce'),
+            // One switch for the whole address; see ADDRESS_FLAGS.
+            'billing_address' => __('Billing Address', 'dodo-payments-for-woocommerce'),
         );
 
         foreach ($customer_editable_fields as $field_key => $field_label) {
@@ -1509,10 +1519,13 @@ class Dodo_Payments_Checkout_Settings
         foreach (array_keys(self::feature_flag_definitions()) as $flag_key) {
             $value = call_user_func($read, self::FLAG_PREFIX . $flag_key);
 
-            if ('yes' === $value) {
-                $flags[$flag_key] = true;
-            } elseif ('no' === $value) {
-                $flags[$flag_key] = false;
+            if ('yes' !== $value && 'no' !== $value) {
+                continue;
+            }
+
+            $api_flags = 'allow_customer_editing_billing_address' === $flag_key ? self::ADDRESS_FLAGS : array($flag_key);
+            foreach ($api_flags as $api_flag) {
+                $flags[$api_flag] = 'yes' === $value;
             }
         }
 
