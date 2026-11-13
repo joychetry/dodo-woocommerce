@@ -921,7 +921,8 @@ class Dodo_Payments_API
             // Get subscription details using LM Meta
             $period = $product->get_meta('_billing_period') ?: 'month';
             $period_count = (int) ($product->get_meta('_billing_interval') ?: 1);
-            $length = (int) ($product->get_meta('_billing_cycles') ?: 0);
+            // License Monks counts billing cycles; Dodo's subscription period counts periods.
+            $length = (int) ($product->get_meta('_billing_cycles') ?: 0) * $period_count;
 
             if ($length === 0) {
                 // default to 10 years
@@ -1066,7 +1067,8 @@ class Dodo_Payments_API
         } elseif ($product->get_type() === 'lm-subscription') {
             $period = $product->get_meta('_billing_period') ?: 'month';
             $period_count = (int) ($product->get_meta('_billing_interval') ?: 1);
-            $length = (int) ($product->get_meta('_billing_cycles') ?: 0);
+            // License Monks counts billing cycles; Dodo's subscription period counts periods.
+            $length = (int) ($product->get_meta('_billing_cycles') ?: 0) * $period_count;
 
             if ($length === 0) {
                 // default to 10 years, if subscription length is not set
@@ -1305,12 +1307,13 @@ class Dodo_Payments_API
      * Schedules a subscription to be canceled at its next billing date in the Dodo Payments API.
      *
      * @param string $dodo_subscription_id The ID of the subscription to update.
+     * @param bool   $cancel               False removes a scheduled cancellation.
      * @throws \Exception If the API request fails or returns an error response.
      */
-    public function cancel_subscription_at_next_billing_date($dodo_subscription_id)
+    public function cancel_subscription_at_next_billing_date($dodo_subscription_id, $cancel = true)
     {
         $body = array(
-            'cancel_at_next_billing_date' => true
+            'cancel_at_next_billing_date' => (bool) $cancel
         );
 
         $res = $this->patch("/subscriptions/{$dodo_subscription_id}", $body);

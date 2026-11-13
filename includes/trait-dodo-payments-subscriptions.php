@@ -17,6 +17,9 @@ if (!defined('ABSPATH')) {
 trait DodoPaymentsSubscriptions
 {
 
+/** @var bool True while a subscription.cancelled webhook is applied: Dodo already cancelled it. */
+private $applying_dodo_cancellation = false;
+
 /**
  * Notes a cancellation made before Dodo linked the subscription (the link is saved on Dodo's
  * first webhook). The subscription.active webhook handler sends it to Dodo then.
@@ -57,8 +60,37 @@ public function handle_lm_subscription_status_updated($subscription, $new_status
         case 'active':
             if (str_contains($old_status, 'on-hold')) {
                 $this->reactivate_lm_subscription($subscription);
+            } elseif (str_contains($old_status, 'pending-cancel')) {
+                $this->undo_scheduled_cancel($subscription);
             }
             break;
+    }
+}
+
+/**
+ * Removes the cancellation scheduled in Dodo when a pending cancellation is reverted,
+ * so Dodo does not cancel at the period end anyway.
+ *
+ * @param WC_Order $subscription WooCommerce or License Monks subscription.
+ */
+private function undo_scheduled_cancel($subscription)
+{
+    $dodo_subscription_id = Dodo_Payments_Subscription_DB::get_dodo_subscription_id($subscription->get_id());
+    if (!$dodo_subscription_id) {
+        return;
+    }
+
+    try {
+        $this->dodo_payments_api->cancel_subscription_at_next_billing_date($dodo_subscription_id, false);
+        $subscription->add_order_note(__('Scheduled cancellation removed in Dodo Payments', 'dodo-payments-for-woocommerce'));
+    } catch (\Exception $e) {
+        $subscription->add_order_note(
+            sprintf(
+                // translators: %1$s: Error message
+                __('Failed to remove the scheduled cancellation in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                $e->getMessage()
+            )
+        );
     }
 }
 
@@ -71,6 +103,9 @@ public function handle_lm_subscription_status_updated($subscription, $new_status
  */
 private function is_dodo_status_echo($new_status)
 {
+    if ('cancelled' === $new_status && $this->applying_dodo_cancellation) {
+        return true;
+    }
     return in_array($new_status, array('on-hold', 'active'), true) && doing_action('woocommerce_api_' . $this->id);
 }
 
@@ -187,6 +222,8 @@ public function handle_subscription_status_updated($subscription, $new_status, $
         case 'active':
             if ($old_status === 'on-hold') {
                 $this->reactivate_subscription($subscription);
+            } elseif ($old_status === 'pending-cancel') {
+                $this->undo_scheduled_cancel($subscription);
             }
             break;
     }

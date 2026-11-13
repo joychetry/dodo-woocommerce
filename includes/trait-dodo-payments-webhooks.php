@@ -364,7 +364,7 @@ private function handle_payment_webhook($payload, $status)
                 }
 
                 if ($subscription->get_type() === 'lm_subscription') {
-                    $this->create_lm_renewal_order($subscription, $payment_id);
+                    $this->create_lm_renewal_order($subscription, $payment_id, $subscription_id);
                 } else {
                     $this->create_renewal_order($subscription, $payment_id);
                 }
@@ -589,6 +589,8 @@ private function handle_subscription_webhook($payload, $status)
         return;
     }
 
+    $this->applying_dodo_cancellation = 'cancelled' === $status;
+
     if ($subscription && $subscription->get_type() === 'lm_subscription') {
         $this->handle_lm_subscription_webhook_event($subscription, $status, $payload);
         return;
@@ -608,6 +610,7 @@ private function handle_subscription_webhook($payload, $status)
 
     switch ($status) {
         case 'active':
+        case 'unpaused':
             $subscription->update_status(
                 'active',
                 sprintf(
@@ -822,6 +825,7 @@ private function handle_lm_subscription_webhook_event($subscription, $status, $p
 {
     switch ($status) {
         case 'active':
+        case 'unpaused':
             LicenseMonks_Subscription_Lifecycle::transition($subscription, 'active');
             $subscription->add_order_note(__('Subscription marked active in Dodo Payments', 'dodo-payments-for-woocommerce'));
             break;
@@ -834,7 +838,10 @@ private function handle_lm_subscription_webhook_event($subscription, $status, $p
             $subscription->add_order_note(__('Subscription on hold in Dodo Payments', 'dodo-payments-for-woocommerce'));
             break;
         case 'cancelled':
-            LicenseMonks_Subscription_Lifecycle::transition($subscription, 'cancelled');
+            // Not transition(): License Monks has no active -> cancelled transition and would ignore it.
+            if (!$subscription->has_status(array('cancelled', 'expired'))) {
+                LicenseMonks_Subscription_Lifecycle::cancel($subscription, true);
+            }
             $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
             break;
         case 'failed':
@@ -869,9 +876,50 @@ private function handle_lm_subscription_webhook_event($subscription, $status, $p
             );
             break;
     }
+
+    // Dodo moves the billing date when a subscription is resumed, reactivated or changes plan.
+    if (in_array($status, array('active', 'unpaused', 'plan_changed'), true)) {
+        $this->sync_lm_period_end($subscription, $payload['data']['next_billing_date'] ?? '');
+    }
 }
 
-private function create_lm_renewal_order($subscription, $payment_id)
+/**
+ * Moves the License Monks period end, which license expiry follows, to Dodo's next billing date.
+ *
+ * License Monks only adds one billing interval per renewal, so it drifts from Dodo after a
+ * pause, a late payment or a plan change that resets the billing cycle.
+ *
+ * @param WC_Order $subscription      License Monks subscription.
+ * @param string   $next_billing_date Dodo's next_billing_date (ISO 8601).
+ * @return void
+ */
+private function sync_lm_period_end($subscription, $next_billing_date)
+{
+    $next = $next_billing_date ? strtotime($next_billing_date) : false;
+    // Reloaded: License Monks saves its own copy of the subscription while handling order hooks.
+    $subscription = wc_get_order($subscription->get_id());
+    if (!$next || $next <= time() || !$subscription || !$subscription->has_status('active')) {
+        return;
+    }
+
+    // The two clocks start minutes apart (order created vs. payment taken); only real drift is corrected.
+    $current = $subscription->get_current_period_end_utc();
+    if ($current && abs($current->getTimestamp() - $next) < DAY_IN_SECONDS) {
+        return;
+    }
+
+    $subscription->set_current_period_end_utc(new WC_DateTime('@' . $next));
+    $subscription->save();
+    $subscription->add_order_note(sprintf(
+        // translators: %s: Date
+        __('Dodo Payments: billing period end set to the next billing date in Dodo Payments (%s).', 'dodo-payments-for-woocommerce'),
+        gmdate('Y-m-d', $next)
+    ));
+    // License Monks moves license expiry to the period end on this action.
+    do_action('licensemonks/subscription/advanced', $subscription);
+}
+
+private function create_lm_renewal_order($subscription, $payment_id, $dodo_subscription_id = '')
 {
     if (!class_exists('LicenseMonks_Subscription_Renewal')) {
         $subscription->add_order_note(
@@ -919,6 +967,11 @@ private function create_lm_renewal_order($subscription, $payment_id)
     LicenseMonks_Subscription_Lifecycle::advance_period($subscription, $renewal_order);
 
     $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
+
+    $dodo_subscription = $dodo_subscription_id ? $this->dodo_payments_api->get_subscription($dodo_subscription_id) : null;
+    if ($dodo_subscription) {
+        $this->sync_lm_period_end($subscription, $dodo_subscription['next_billing_date'] ?? '');
+    }
 }
 
 /**
