@@ -5,7 +5,7 @@
  * Plugin URI: https://github.com/joychetry/dodo-woocommerce
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 1.2.2
+ * Version: 1.3.0
  * Author: Classic Monks
  * Author URI: https://classicmonks.com
  * Developer: Classic Monks

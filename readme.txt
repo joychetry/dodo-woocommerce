@@ -3,7 +3,7 @@ Contributors: classicmonks
 Tags: payments, woocommerce, dodo
 Requires at least: 7.1
 Tested up to: 7.1
-Stable tag: 1.2.2
+Stable tag: 1.3.0
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,13 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 1.3.0 =
+* Change: Every checkout now uses the Dodo Payments Checkout Sessions API. Stores that had both Tax ID Collection and Overlay Checkout turned off move to the hosted checkout page, where the store currency is locked, the discount code field is hidden and a phone field is shown
+* New: Checkout settings for redirect URLs, appearance, payment methods, checkout behaviour, up to five extra checkout questions and feature flags, with a "Reset checkout options" button
+* New: Customers' answers to the extra checkout questions are added to the order as a note
+* Fix: The overlay checkout opens only for the order just placed, instead of reopening an earlier unpaid order's checkout with its old total
+* Fix: Coupons are sent as discount_codes, replacing the deprecated discount_code field
 
 = 1.2.2 =
 * Fix: The invoice section shows once on the admin order page and appears on the customer's order page even when the theme replaces the order details table
