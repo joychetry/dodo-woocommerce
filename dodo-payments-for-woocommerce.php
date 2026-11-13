@@ -5,7 +5,7 @@
  * Plugin URI: https://github.com/joychetry/dodo-woocommerce
  * Short Description: Accept payments globally within minutes.
  * Description: Dodo Payments plugin for WooCommerce. Accept payments from your customers using Dodo Payments.
- * Version: 1.2.2
+ * Version: 1.3.0
  * Author: Classic Monks
  * Author URI: https://classicmonks.com
  * Developer: Classic Monks
@@ -50,6 +50,7 @@ require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-subscripti
 
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-cart-exception.php';
 
+require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-checkout-settings.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-api.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-standard-webhook.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/class-dodo-payments-invoice.php';
@@ -62,6 +63,13 @@ require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-subscripti
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-invoices.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-b2b.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-webhooks.php';
+
+// WooCommerce only saves a settings section when the posted form carries its own `save`
+// button, so a submission from the "Reset checkout options" button has to be let through.
+add_filter('woocommerce_save_settings_checkout_dodo_payments', function ($save) {
+    // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Presence check only; WC_Admin_Settings::save() verifies the nonce.
+    return $save || !empty($_POST[Dodo_Payments_Checkout_Settings::RESET_FIELD]);
+});
 
 // Create database tables on plugin activation
 register_activation_hook(__FILE__, function () {

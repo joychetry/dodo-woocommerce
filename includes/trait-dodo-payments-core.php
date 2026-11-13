@@ -59,6 +59,7 @@ public function __construct()
     $this->init_dodo_payments_api();
 
     add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
+    add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
 
     add_action('woocommerce_thankyou_' . $this->id, array($this, 'thank_you_page'));
 
@@ -77,15 +78,9 @@ public function __construct()
 
     // Overlay checkout scripts
     add_action('wp_enqueue_scripts', array($this, 'enqueue_overlay_checkout_scripts'));
-    
-    // AJAX handler to clear checkout session URL
-    add_action('wp_ajax_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
-    add_action('wp_ajax_nopriv_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
 
     // AJAX: extend trial period for a subscription (admin only)
     add_action('wp_ajax_dodo_extend_trial_period', array($this, 'ajax_extend_trial_period'));
-    // Clear session after payment completion
-    add_action('woocommerce_thankyou_' . $this->id, array($this, 'clear_checkout_session_after_payment'), 5);
 
     // "Purchasing as a business" fields on the WooCommerce checkout.
     // Only registered when Tax ID Collection is enabled — otherwise the
@@ -109,7 +104,107 @@ private function init_dodo_payments_api()
         'global_tax_category' => $this->global_tax_category,
         'global_tax_inclusive' => $this->global_tax_inclusive,
         'brand_id' => $this->brand_id,
+        'option_reader' => array($this, 'get_option'),
     ));
+}
+
+/**
+ * Whether the current request is this gateway's settings screen.
+ *
+ * Read-only check on the URL, so no nonce is involved.
+ *
+ * @return bool
+ */
+private function is_gateway_settings_screen()
+{
+    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+    return is_admin() && isset($_GET['page'], $_GET['section']) && 'wc-settings' === $_GET['page'] && $this->id === $_GET['section'];
+}
+
+/**
+ * Loads the collapsible sections, the questions editor and the reset button.
+ *
+ * @return void
+ * @since 1.3.0
+ */
+public function enqueue_admin_assets()
+{
+    if (!$this->is_gateway_settings_screen()) {
+        return;
+    }
+
+    $css = 'assets/css/dodo-admin-settings.css';
+    $js = 'assets/js/dodo-admin-settings.min.js';
+
+    // filemtime as the version: admin-only, and it cannot drift from the file.
+    wp_enqueue_style('dodo-payments-admin-settings', DODO_PAYMENTS_PLUGIN_URL . $css, array(), (string) filemtime(DODO_PAYMENTS_PLUGIN_DIR . $css));
+
+    // The payment methods multiselect uses WooCommerce's enhanced select.
+    if (wp_script_is('wc-enhanced-select', 'registered')) {
+        wp_enqueue_script('wc-enhanced-select');
+    }
+
+    wp_enqueue_script('dodo-payments-admin-settings', DODO_PAYMENTS_PLUGIN_URL . $js, array('jquery'), (string) filemtime(DODO_PAYMENTS_PLUGIN_DIR . $js), true);
+
+    $prefix = Dodo_Payments_Checkout_Settings::PREFIX;
+    wp_localize_script('dodo-payments-admin-settings', 'dodoPaymentsSettings', array(
+        'sectionClass' => Dodo_Payments_Checkout_Settings::SECTION_CLASS,
+        'cancelModeField' => $this->get_field_key($prefix . 'cancel_url_mode'),
+        'cancelCustomField' => $this->get_field_key($prefix . 'cancel_url_custom'),
+        'resetField' => Dodo_Payments_Checkout_Settings::RESET_FIELD,
+        'i18n' => array(
+            'reset' => __('Reset checkout options', 'dodo-payments-for-woocommerce'),
+            'resetConfirm' => __('Reset every checkout option and feature flag to its default? Your general settings, API keys, webhook signing keys and brand are kept. Unsaved changes on this page will be lost.', 'dodo-payments-for-woocommerce'),
+            'oneField' => __('1 setting', 'dodo-payments-for-woocommerce'),
+            /* translators: %d: number of settings in the section */
+            'manyFields' => __('%d settings', 'dodo-payments-for-woocommerce'),
+        ),
+    ));
+}
+
+/**
+ * Saves the settings form, or resets the checkout options when the reset button submitted it.
+ *
+ * A reset clears the Checkout Session options and feature flags only. Unsaved edits
+ * elsewhere on the page are discarded rather than half-applied.
+ *
+ * @return bool
+ * @since 1.3.0
+ */
+public function process_admin_options()
+{
+    // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Verified by WC_Admin_Settings::save().
+    if (empty($_POST[Dodo_Payments_Checkout_Settings::RESET_FIELD])) {
+        return parent::process_admin_options();
+    }
+
+    $this->init_settings();
+    $this->settings = Dodo_Payments_Checkout_Settings::reset_settings($this->settings);
+
+    return update_option(
+        $this->get_option_key(),
+        apply_filters('woocommerce_settings_api_sanitized_fields_' . $this->id, $this->settings),
+        'yes'
+    );
+}
+
+/**
+ * Renders the extra checkout questions editor.
+ *
+ * Dispatched by WC_Settings_API for form fields of type `dodo_custom_fields`.
+ *
+ * @param string               $key  Field key.
+ * @param array<string, mixed> $data Field definition.
+ * @return string
+ * @since 1.3.0
+ */
+public function generate_dodo_custom_fields_html($key, $data)
+{
+    return Dodo_Payments_Checkout_Settings::render_custom_fields(
+        $this->get_field_key($key),
+        wp_parse_args($data, array('title' => '', 'description' => '')),
+        $this->get_option($key)
+    );
 }
 
 /**
@@ -133,8 +228,7 @@ private function get_brand_options($testmode)
     }
 
     // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only screen check.
-    $on_settings_screen = is_admin() && isset($_GET['page'], $_GET['section']) && 'wc-settings' === $_GET['page'] && $this->id === $_GET['section'];
-    if ('' === $api_key || !$on_settings_screen) {
+    if ('' === $api_key || !$this->is_gateway_settings_screen()) {
         return $options;
     }
 
@@ -290,7 +384,7 @@ public function init_form_fields()
             'label' => __('Allow customers to provide their Tax ID / VAT number during checkout', 'dodo-payments-for-woocommerce'),
             'default' => 'no',
             'desc_tip' => false,
-            'description' => __('When enabled, customers will be able to enter their business Tax ID or VAT number on the Dodo Payments checkout page. This is useful for B2B transactions and tax compliance. Uses the modern Checkout Sessions API.', 'dodo-payments-for-woocommerce'),
+            'description' => __('Adds a "Purchasing as a business" option with company and Tax ID / VAT number fields to your checkout, and lets customers enter a tax ID on the Dodo Payments checkout page. Useful for B2B sales and tax compliance.', 'dodo-payments-for-woocommerce'),
         ),
         'overlay_checkout_title' => array(
             'title' => __('Overlay Checkout', 'dodo-payments-for-woocommerce'),
@@ -303,12 +397,20 @@ public function init_form_fields()
             'label' => __('Use overlay checkout SDK for embedded checkout experience', 'dodo-payments-for-woocommerce'),
             'default' => 'no',
             'desc_tip' => false,
-            'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
+            'description' => __('When enabled, customers complete checkout in a pop-up on your checkout page instead of being redirected to Dodo Payments.', 'dodo-payments-for-woocommerce'),
         ),
-        'webhook_endpoint' => array(
-            'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
-            'type' => 'title',
-            'description' => $webhook_help_description,
+    );
+
+    // Checkout Session options and feature flags, then the webhook URL last as before.
+    $this->form_fields = array_merge(
+        $this->form_fields,
+        Dodo_Payments_Checkout_Settings::form_fields(),
+        array(
+            'webhook_endpoint' => array(
+                'title' => __('Webhook Endpoint', 'dodo-payments-for-woocommerce'),
+                'type' => 'title',
+                'description' => $webhook_help_description,
+            ),
         )
     );
 }

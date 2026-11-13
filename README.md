@@ -77,7 +77,7 @@ The plugin supports collecting Tax ID (VAT) numbers from customers during checko
 
 When Tax ID collection is enabled:
 
-- The plugin uses the modern **Checkout Sessions API** instead of the legacy payment links
+- Your checkout shows a "Purchasing as a business" option with company and Tax ID fields
 - Customers will see a Tax ID / VAT number field on the Dodo Payments checkout page
 - The field is optional by default, allowing both B2B and B2C customers to complete checkout
 - Tax IDs are securely stored by Dodo Payments and included in payment/subscription records
@@ -85,9 +85,8 @@ When Tax ID collection is enabled:
 
 ### Technical Details
 
-- **API Endpoint**: Uses `/checkout-sessions` instead of `/payments` or `/subscriptions`
-- **Feature Flag**: Sends `feature_flags: { allow_tax_id: true }` in the checkout session request
-- **Backward Compatible**: When disabled, the plugin continues using the legacy payment API
+- **API Endpoint**: Every checkout uses the Checkout Sessions API (`POST /checkouts`), whether or not Tax ID collection is enabled
+- **Feature Flag**: Sends `feature_flags: { allow_tax_id: true }` when enabled and `false` when disabled
 - **Webhook Handling**: No changes required - checkout sessions fire the same webhook events (payment.succeeded, subscription.active, etc.)
 
 ### For Developers

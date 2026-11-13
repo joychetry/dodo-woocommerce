@@ -21,9 +21,17 @@ class Dodo_Payments_API
     private string $brand_id;
 
     /**
+     * Reads a gateway setting by key. The Checkout Session options and flags are built
+     * from it only when a session is created, not on every request that loads gateways.
+     *
+     * @var callable|null
+     */
+    private $option_reader;
+
+    /**
      * Initializes the Dodo_Payments_API instance with configuration options.
      *
-     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string} $options Configuration options for API access and behavior.
+     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string, option_reader?: callable} $options Configuration options for API access and behavior.
      */
     public function __construct($options)
     {
@@ -32,6 +40,7 @@ class Dodo_Payments_API
         $this->global_tax_category = $options['global_tax_category'];
         $this->global_tax_inclusive = $options['global_tax_inclusive'];
         $this->brand_id = (string) ($options['brand_id'] ?? '');
+        $this->option_reader = $options['option_reader'] ?? null;
     }
 
     /**
@@ -275,7 +284,7 @@ class Dodo_Payments_API
     /**
      * Creates a checkout session in the Dodo Payments API using WooCommerce order data.
      *
-     * This method uses the modern Checkout Sessions API which supports advanced features like tax ID collection.
+     * Every new checkout, one-time or subscription, goes through this endpoint.
      * Works for both one-time payments and subscriptions.
      *
      * @param WC_Order $order The WooCommerce order to use for checkout details.
@@ -284,10 +293,12 @@ class Dodo_Payments_API
      * @param string $return_url URL to redirect the customer after payment completion.
      * @param bool $enable_tax_id_collection Whether to enable tax ID collection on the checkout page.
      * @param array<string>|null $allowed_payment_method_types Optional array of allowed payment method types. If null, all eligible methods are available.
+     * @param bool $skip_trial Whether to charge the first cycle now instead of starting the product's trial.
+     * @param string|null $cancel_url Where the hosted checkout's back button leads. Null hides the button.
      * @throws \Exception If the API request fails or returns an error.
      * @return array{session_id: string, checkout_url: string} The created checkout session's ID and URL.
      */
-    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null, $skip_trial = false)
+    public function create_checkout_session($order, $synced_products, $dodo_discount_code, $return_url, $enable_tax_id_collection = false, $allowed_payment_method_types = null, $skip_trial = false, $cancel_url = null)
     {
         // Get company name information
         $default_company_name = $order->get_billing_company();
@@ -350,9 +361,13 @@ class Dodo_Payments_API
             }
         }
 
-        // Add discount code if provided
+        if ($cancel_url) {
+            $request['cancel_url'] = $cancel_url;
+        }
+
+        // `discount_code` is deprecated on checkout sessions in favour of the stackable `discount_codes`.
         if ($dodo_discount_code) {
-            $request['discount_code'] = $dodo_discount_code;
+            $request['discount_codes'] = array($dodo_discount_code);
         }
 
         // Configure feature flags following Dodo best practices
@@ -365,16 +380,13 @@ class Dodo_Payments_API
             'allow_currency_selection' => false,
         );
 
-        // Hide the promo-code field on Dodo's checkout (coupons are applied in WooCommerce),
-        // but keep it enabled when a coupon is pre-applied: Dodo rejects `discount_code`
-        // outright when allow_discount_code is false.
-        if (!$dodo_discount_code) {
-            $feature_flags['allow_discount_code'] = false;
-        }
-        
-        if ($enable_tax_id_collection) {
-            $feature_flags['allow_tax_id'] = true;
-        }
+        // Hide the promo-code field on Dodo's checkout: coupons are applied in WooCommerce.
+        // A code passed in `discount_codes` still applies when the field is hidden (Dodo docs).
+        $feature_flags['allow_discount_code'] = false;
+
+        // Dodo's own default is to offer the tax ID field, so say no explicitly when the
+        // store has tax ID collection turned off.
+        $feature_flags['allow_tax_id'] = (bool) $enable_tax_id_collection;
 
         // A prefilled Tax ID / business name is locked on the checkout form unless the
         // customer can edit it (Dodo docs: allow_customer_editing_* flags, default false).
@@ -383,7 +395,29 @@ class Dodo_Payments_API
             $feature_flags['allow_customer_editing_business_name'] = true;
         }
 
-        $request['feature_flags'] = $feature_flags;
+        // Flags the merchant set on the settings page override the plugin's own choices above.
+        if ($this->option_reader) {
+            $feature_flags = array_merge($feature_flags, Dodo_Payments_Checkout_Settings::feature_flag_overrides($this->option_reader));
+        }
+
+        // ...except where that would produce a request Dodo rejects (400).
+        if (!empty($feature_flags['require_phone_number'])) {
+            $feature_flags['allow_phone_number_collection'] = true;
+        }
+        if (!empty($feature_flags['require_tax_id'])) {
+            $feature_flags['allow_tax_id'] = true;
+        }
+
+        /**
+         * Filters the Checkout Session feature flags before the session is created.
+         *
+         * @param array<string, bool> $feature_flags Flags about to be sent.
+         * @param WC_Order $order The order the checkout session is for.
+         *
+         * @since 1.3.0
+         */
+        $filtered_flags = apply_filters('dodo_payments_checkout_session_feature_flags', $feature_flags, $order);
+        $request['feature_flags'] = is_array($filtered_flags) ? $filtered_flags : $feature_flags;
 
         // Skip-trial: subscription sessions that must charge the full first cycle now.
         // trial_period_days is the documented per-subscription override; 0 disables the product's trial.
@@ -421,6 +455,62 @@ class Dodo_Payments_API
             $request['allowed_payment_method_types'] = $allowed_payment_method_types;
         }
 
+        // Store-wide options from the settings page go in underneath: anything derived
+        // from the order itself wins over a store-wide setting.
+        if ($this->option_reader) {
+            $request = array_merge(Dodo_Payments_Checkout_Settings::build_request_options($this->option_reader), $request);
+        }
+
+        // Dodo answers 422 to a payment method layout on a checkout that is not single-page.
+        if (empty($request['feature_flags']['single_page'])) {
+            unset($request['customization']['payment_method_layout']);
+            if (empty($request['customization'])) {
+                unset($request['customization']);
+            }
+        }
+
+        // `confirm` makes Dodo settle every detail up front and reject the session (422) when a
+        // billing field is missing. Countries without postcodes or states would then never get
+        // a payment page, so for such an order let the hosted page collect what is missing.
+        if (!empty($request['confirm'])) {
+            // Dodo defaults minimal_address to true on single-page checkouts.
+            $minimal_address = isset($request['minimal_address']) ? !empty($request['minimal_address']) : !empty($request['feature_flags']['single_page']);
+            $missing = Dodo_Payments_Checkout_Settings::missing_confirm_fields($order, $minimal_address);
+
+            if (!empty($missing)) {
+                unset($request['confirm']);
+                $this->log_debug('Order #' . $order->get_id() . ' is missing ' . implode(', ', $missing) . ', so its checkout session is not finalised up front');
+            }
+        }
+
+        // A required phone the session does not carry cannot be finalised up front either, so let the
+        // hosted page ask for it.
+        if (!empty($request['confirm']) && !empty($request['feature_flags']['require_phone_number']) && empty($request['customer']['phone_number'])) {
+            unset($request['confirm']);
+        }
+
+        // Dodo also answers 422 to a required tax ID on a confirmed session that carries none, which would
+        // block every customer buying as an individual.
+        if (!empty($request['confirm']) && empty($request['tax_id'])) {
+            unset($request['feature_flags']['require_tax_id']);
+        }
+
+        /**
+         * Filters the complete Checkout Session request body before it is sent.
+         *
+         * An escape hatch for the Checkout Sessions fields the settings page does not
+         * expose, and for per-order overrides of the ones it does.
+         *
+         * @param array<string, mixed> $request The request body.
+         * @param WC_Order $order The order the checkout session is for.
+         *
+         * @since 1.3.0
+         */
+        $filtered_request = apply_filters('dodo_payments_checkout_session_request', $request, $order);
+        if (is_array($filtered_request) && !empty($filtered_request)) {
+            $request = $filtered_request;
+        }
+
         $res = $this->post('/checkouts', $request);
 
         // The phone is optional, but Dodo rejects the whole session for a number that is well-formed
@@ -429,6 +519,9 @@ class Dodo_Payments_API
             && str_contains(wp_remote_retrieve_body($res), 'phone_number')) {
             $this->log_debug('Dodo rejected the billing phone for order #' . $order->get_id() . ', retrying the checkout session without it');
             unset($request['customer']['phone_number']);
+            if (!empty($request['feature_flags']['require_phone_number'])) {
+                unset($request['confirm']); // Same as above: the hosted page must collect the phone.
+            }
             $res = $this->post('/checkouts', $request);
         }
 
@@ -526,56 +619,6 @@ class Dodo_Payments_API
     private function is_valid_checkout_phone_number($phone)
     {
         return is_string($phone) && preg_match('/^\+[1-9]\d{6,14}$/', $phone) === 1;
-    }
-
-    /**
-     * Creates a payment in the Dodo Payments API using WooCommerce order data.
-     *
-     * Builds a payment request with billing and customer information, a list of synced products, an optional discount code, and a return URL. Returns the payment ID and payment link on success.
-     *
-     * @param WC_Order $order The WooCommerce order to use for payment details.
-     * @param array{amount: mixed, product_id: string, quantity: mixed}[] $synced_products List of products to include in the payment.
-     * @param string|null $dodo_discount_code Optional discount code to apply.
-     * @param string $return_url URL to redirect the customer after payment completion.
-     * @throws \Exception If the API request fails or returns an error.
-     * @return array{payment_id: string, payment_link: string} The created payment's ID and payment link.
-     */
-    public function create_payment($order, $synced_products, $dodo_discount_code, $return_url)
-    {
-        $request = array(
-            // Build billing address and filter empty values as per Dodo guidelines
-            'billing' => array_filter(array(
-                'city'    => $order->get_billing_city(),
-                'country' => $order->get_billing_country(),
-                'state'   => $order->get_billing_state(),
-                'street'  => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
-                'zipcode' => $order->get_billing_postcode(),
-            )),
-            'customer' => array(
-                'email' => $order->get_billing_email(),
-                'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
-            ),
-            // Lock to the store currency so Dodo's adaptive currency does not silently
-            // convert the price to the customer's local currency.
-            'billing_currency' => get_woocommerce_currency(),
-            'product_cart' => $synced_products,
-            'discount_code' => $dodo_discount_code,
-            'payment_link' => true,
-            'return_url' => $return_url,
-            'metadata' => array('wc_order_id' => (string) $order->get_id()),
-        );
-
-        $res = $this->post('/payments', $request);
-
-        if (is_wp_error($res)) {
-            throw new Exception("Failed to create payment: " . esc_html($res->get_error_message()));
-        }
-
-        if (wp_remote_retrieve_response_code($res) !== 200) {
-            throw new Exception("Failed to create payment: " . esc_html($res['body']));
-        }
-
-        return json_decode($res['body'], true);
     }
 
     /**
@@ -1103,81 +1146,6 @@ class Dodo_Payments_API
         }
 
         return;
-    }
-
-    /**
-     * Creates a new subscription in the Dodo Payments API using WooCommerce order and product data.
-     *
-     * Builds and sends a subscription creation request with customer, billing, product, and optional discount information. Supports generating a payment link for checkout and an optional mandate-only mode for payment authorization without immediate charge.
-     *
-     * @param WC_Order $order WooCommerce order containing customer and billing details.
-     * @param array $synced_products Array of product data synced with the Dodo Payments API.
-     * @param string|null $dodo_discount_code Optional discount code to apply to the subscription.
-     * @param string $return_url URL to redirect the customer after subscription completion.
-     * @param bool $mandate_only If true, only authorizes the payment method without charging immediately.
-     * @throws \Exception If the API request fails or returns an error response.
-     * @return array{
-     *    subscription_id: string,
-     *    payment_id: string,
-     *    payment_link: string,
-     * } Subscription creation result including IDs and payment link.
-     */
-    public function create_subscription($order, $synced_products, $dodo_discount_code, $return_url, $mandate_only = false)
-    {
-        // Get the first product (subscriptions typically have one product)
-        $first_product = $synced_products[0];
-
-        $request = array(
-            // Build billing address and filter empty values as per Dodo guidelines
-            'billing' => array_filter(array(
-                'city'    => $order->get_billing_city(),
-                'country' => $order->get_billing_country(),
-                'state'   => $order->get_billing_state(),
-                'street'  => trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2()),
-                'zipcode' => $order->get_billing_postcode(),
-            )),
-            'customer' => array(
-                'email' => $order->get_billing_email(),
-                'name' => $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
-            ),
-            // Lock to the store currency so Dodo's adaptive currency does not silently
-            // convert the price to the customer's local currency.
-            'billing_currency' => get_woocommerce_currency(),
-            'product_id' => $first_product['product_id'],
-            'quantity' => $first_product['quantity'],
-            // Lets webhooks (including renewal charges) find the order, as in checkout sessions.
-            'metadata' => array('wc_order_id' => (string) $order->get_id()),
-        );
-
-        // Add discount if provided
-        if ($dodo_discount_code) {
-            $request['discount_code'] = $dodo_discount_code;
-        }
-
-        // Add payment link and return URL for checkout flow
-        if ($return_url) {
-            $request['payment_link'] = true;
-            $request['return_url'] = $return_url;
-        }
-
-        // Add on-demand subscription configuration if mandate_only is true
-        if ($mandate_only) {
-            $request['on_demand'] = array(
-                'mandate_only' => true,
-            );
-        }
-
-        $res = $this->post('/subscriptions', $request);
-
-        if (is_wp_error($res)) {
-            throw new Exception("Failed to create subscription: " . esc_html($res->get_error_message()));
-        }
-
-        if (wp_remote_retrieve_response_code($res) !== 200) {
-            throw new Exception("Failed to create subscription: " . esc_html($res['body']));
-        }
-
-        return json_decode($res['body'], true);
     }
 
     /**

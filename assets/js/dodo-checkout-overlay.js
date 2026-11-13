@@ -55,18 +55,18 @@
                 case 'checkout.opened':
                     // Overlay opened
                     $('body').addClass('dodo-checkout-overlay-open');
-                    // Clear session data to prevent reopening on refresh
-                    if (dodoCheckoutOverlay.ajaxUrl && dodoCheckoutOverlay.nonce) {
-                        $.post(dodoCheckoutOverlay.ajaxUrl, {
-                            action: 'dodo_clear_checkout_session',
-                            nonce: dodoCheckoutOverlay.nonce
-                        });
-                    }
                     break;
 
                 case 'checkout.closed':
                     // Overlay closed
                     $('body').removeClass('dodo-checkout-overlay-open');
+                    // Drop the session from the URL so a reload does not reopen this pop-up
+                    // over a cart the customer may change next.
+                    if (window.history && window.history.replaceState) {
+                        var url = new URL(window.location.href);
+                        url.searchParams.delete('dodo_checkout_session_url');
+                        window.history.replaceState(null, '', url.toString());
+                    }
                     break;
 
                 case 'checkout.payment_page_opened':
