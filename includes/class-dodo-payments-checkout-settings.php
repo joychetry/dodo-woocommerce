@@ -672,8 +672,8 @@ class Dodo_Payments_Checkout_Settings
     }
 
     /**
-     * WooCommerce form field definitions for every option in the schema, followed
-     * by the feature flags.
+     * WooCommerce form field definitions for every option in the schema, with the
+     * feature flags placed after the appearance section.
      *
      * @return array<string, array<string, mixed>>
      */
@@ -682,10 +682,15 @@ class Dodo_Payments_Checkout_Settings
         $fields = array();
 
         foreach (self::schema() as $key => $definition) {
+            // The feature flags sit right after Checkout Appearance.
+            if ('section_payments' === $key) {
+                $fields += self::feature_flag_form_fields();
+            }
+
             $fields[self::PREFIX . $key] = $definition['form'];
         }
 
-        return array_merge($fields, self::feature_flag_form_fields());
+        return $fields;
     }
 
     /**
