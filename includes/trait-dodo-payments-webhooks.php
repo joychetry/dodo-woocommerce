@@ -576,9 +576,9 @@ private function handle_subscription_webhook($payload, $status)
 
     // Never reactivate a subscription cancelled in WooCommerce. Dodo still billing it means the
     // cancellation never reached Dodo (cancelled before linking, or the API call failed): send it now.
-    if ('active' === $status && $subscription && $subscription->has_status(array('cancelled', 'expired', 'pending-cancel'))) {
+    if (in_array($status, array('active', 'unpaused'), true) && $subscription && $subscription->has_status(array('cancelled', 'expired', 'pending-cancel'))) {
         $current = $subscription->get_status();
-        $this->log_debug("subscription.active for {$current} subscription #{$subscription->get_id()}, sending the cancellation to Dodo");
+        $this->log_debug("subscription.{$status} for {$current} subscription #{$subscription->get_id()}, sending the cancellation to Dodo");
         $sent = $subscription->get_type() === 'lm_subscription'
             ? $this->handle_lm_subscription_status_updated($subscription, $current, $current)
             : $this->handle_subscription_status_updated($subscription, $current, $current);
@@ -589,7 +589,7 @@ private function handle_subscription_webhook($payload, $status)
         return;
     }
 
-    $this->applying_dodo_cancellation = 'cancelled' === $status;
+    $this->applying_dodo_status = in_array($status, array('cancelled', 'expired'), true) ? $status : '';
 
     if ($subscription && $subscription->get_type() === 'lm_subscription') {
         $this->handle_lm_subscription_webhook_event($subscription, $status, $payload);
@@ -619,6 +619,15 @@ private function handle_subscription_webhook($payload, $status)
                     $subscription_id
                 )
             );
+            // Dodo moves the billing date by the pause length. A stale date would make "cancel at period end" cancel immediately.
+            $next = strtotime($payload['data']['next_billing_date'] ?? '');
+            if ('unpaused' === $status && $next > time()) {
+                try {
+                    $subscription->update_dates(array('next_payment' => gmdate('Y-m-d H:i:s', $next)));
+                } catch (\Exception $e) {
+                    $this->log_debug('Could not sync next payment date of subscription #' . $subscription->get_id() . ': ' . $e->getMessage());
+                }
+            }
             break;
 
         case 'renewed':
@@ -838,10 +847,7 @@ private function handle_lm_subscription_webhook_event($subscription, $status, $p
             $subscription->add_order_note(__('Subscription on hold in Dodo Payments', 'dodo-payments-for-woocommerce'));
             break;
         case 'cancelled':
-            // Not transition(): License Monks has no active -> cancelled transition and would ignore it.
-            if (!$subscription->has_status(array('cancelled', 'expired'))) {
-                LicenseMonks_Subscription_Lifecycle::cancel($subscription, true);
-            }
+            LicenseMonks_Subscription_Lifecycle::transition($subscription, 'cancelled');
             $subscription->add_order_note(__('Subscription cancelled in Dodo Payments', 'dodo-payments-for-woocommerce'));
             break;
         case 'failed':
@@ -877,8 +883,9 @@ private function handle_lm_subscription_webhook_event($subscription, $status, $p
             break;
     }
 
-    // Dodo moves the billing date when a subscription is resumed, reactivated or changes plan.
-    if (in_array($status, array('active', 'unpaused', 'plan_changed'), true)) {
+    // Dodo moves the billing date when a subscription is resumed or changes plan. Not on 'active':
+    // a recovery comes with a renewal charge, and syncing first would make that renewal advance it twice.
+    if (in_array($status, array('unpaused', 'plan_changed'), true)) {
         $this->sync_lm_period_end($subscription, $payload['data']['next_billing_date'] ?? '');
     }
 }
@@ -968,9 +975,14 @@ private function create_lm_renewal_order($subscription, $payment_id, $dodo_subsc
 
     $subscription->add_order_note(__('Subscription renewed by Dodo Payments', 'dodo-payments-for-woocommerce'));
 
-    $dodo_subscription = $dodo_subscription_id ? $this->dodo_payments_api->get_subscription($dodo_subscription_id) : null;
-    if ($dodo_subscription) {
-        $this->sync_lm_period_end($subscription, $dodo_subscription['next_billing_date'] ?? '');
+    // An on-time renewal ends one interval from now, as Dodo's does. Ask Dodo only after a late payment or a missed advance.
+    $end = $subscription->get_current_period_end_utc();
+    $expected = strtotime('+' . $subscription->get_billing_interval() . ' ' . $subscription->get_billing_period() . 's');
+    if ($dodo_subscription_id && (!$end || abs($end->getTimestamp() - $expected) >= DAY_IN_SECONDS)) {
+        $dodo_subscription = $this->dodo_payments_api->get_subscription($dodo_subscription_id);
+        if ($dodo_subscription) {
+            $this->sync_lm_period_end($subscription, $dodo_subscription['next_billing_date'] ?? '');
+        }
     }
 }
 

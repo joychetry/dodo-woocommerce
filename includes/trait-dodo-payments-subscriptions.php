@@ -17,8 +17,8 @@ if (!defined('ABSPATH')) {
 trait DodoPaymentsSubscriptions
 {
 
-/** @var bool True while a subscription.cancelled webhook is applied: Dodo already cancelled it. */
-private $applying_dodo_cancellation = false;
+/** @var string Status being applied because Dodo already has it (a cancelled or expired webhook, a kept scheduled cancellation). */
+private $applying_dodo_status = '';
 
 /**
  * Notes a cancellation made before Dodo linked the subscription (the link is saved on Dodo's
@@ -84,26 +84,42 @@ private function undo_scheduled_cancel($subscription)
         $this->dodo_payments_api->cancel_subscription_at_next_billing_date($dodo_subscription_id, false);
         $subscription->add_order_note(__('Scheduled cancellation removed in Dodo Payments', 'dodo-payments-for-woocommerce'));
     } catch (\Exception $e) {
-        $subscription->add_order_note(
-            sprintf(
-                // translators: %1$s: Error message
-                __('Failed to remove the scheduled cancellation in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                $e->getMessage()
-            )
-        );
+        // Dodo still ends it at the period end: show that instead of an active subscription. Reactivating again retries.
+        $this->applying_dodo_status = 'pending-cancel';
+        try {
+            $subscription->update_status(
+                'pending-cancel',
+                sprintf(
+                    // translators: %1$s: Error message
+                    __('Failed to remove the scheduled cancellation in Dodo Payments, so the subscription still ends at the period end. Reactivate it again to retry. Error: %1$s', 'dodo-payments-for-woocommerce'),
+                    $e->getMessage()
+                )
+            );
+        } catch (\Exception $revert_error) {
+            $subscription->add_order_note(
+                sprintf(
+                    // translators: %1$s: Error message
+                    __('Failed to remove the scheduled cancellation in Dodo Payments; it still ends at the period end: %1$s', 'dodo-payments-for-woocommerce'),
+                    $e->getMessage()
+                )
+            );
+        } finally {
+            $this->applying_dodo_status = '';
+        }
     }
 }
 
 /**
- * Whether a hold or reactivation is being applied from a Dodo webhook, so it must not be sent back.
+ * Whether a status change came from Dodo, so it must not be sent back.
  *
- * Sending it back races Dodo: after a failed charge Dodo still reports "active" for a moment, and
- * pausing it then turns its on_hold (customer can pay the dues) into paused. Cancellations still
- * go through: the webhook handler relies on them to resend a cancellation Dodo missed.
+ * Holds and reactivations from a webhook: sending them back races Dodo, because after a failed charge
+ * Dodo still reports "active" for a moment, and pausing it then turns its on_hold (customer can pay
+ * the dues) into paused. Also a cancellation or expiry Dodo reported, which Dodo would reject.
+ * Other cancellations go through: the webhook handler relies on them to resend one Dodo missed.
  */
 private function is_dodo_status_echo($new_status)
 {
-    if ('cancelled' === $new_status && $this->applying_dodo_cancellation) {
+    if ($new_status === $this->applying_dodo_status) {
         return true;
     }
     return in_array($new_status, array('on-hold', 'active'), true) && doing_action('woocommerce_api_' . $this->id);

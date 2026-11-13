@@ -1319,11 +1319,11 @@ class Dodo_Payments_API
         $res = $this->patch("/subscriptions/{$dodo_subscription_id}", $body);
 
         if (is_wp_error($res)) {
-            throw new Exception("Failed to cancel subscription: " . esc_html($res->get_error_message()));
+            throw new Exception("Failed to update the scheduled cancellation: " . esc_html($res->get_error_message()));
         }
 
         if (wp_remote_retrieve_response_code($res) !== 200) {
-            throw new Exception("Failed to cancel subscription: " . esc_html($res['body']));
+            throw new Exception("Failed to update the scheduled cancellation: " . esc_html($res['body']));
         }
 
         return;
