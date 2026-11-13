@@ -55,13 +55,6 @@
                 case 'checkout.opened':
                     // Overlay opened
                     $('body').addClass('dodo-checkout-overlay-open');
-                    // Clear session data to prevent reopening on refresh
-                    if (dodoCheckoutOverlay.ajaxUrl && dodoCheckoutOverlay.nonce) {
-                        $.post(dodoCheckoutOverlay.ajaxUrl, {
-                            action: 'dodo_clear_checkout_session',
-                            nonce: dodoCheckoutOverlay.nonce
-                        });
-                    }
                     break;
 
                 case 'checkout.closed':

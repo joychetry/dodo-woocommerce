@@ -21,23 +21,17 @@ class Dodo_Payments_API
     private string $brand_id;
 
     /**
-     * Store-wide Checkout Session options from the settings page, already in request shape.
+     * Reads a gateway setting by key. The Checkout Session options and flags are built
+     * from it only when a session is created, not on every request that loads gateways.
      *
-     * @var array<string, mixed>
+     * @var callable|null
      */
-    private array $checkout_options;
-
-    /**
-     * Checkout Session feature flags the merchant explicitly set on the settings page.
-     *
-     * @var array<string, bool>
-     */
-    private array $feature_flags;
+    private $option_reader;
 
     /**
      * Initializes the Dodo_Payments_API instance with configuration options.
      *
-     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string, checkout_options?: array<string, mixed>, feature_flags?: array<string, bool>} $options Configuration options for API access and behavior.
+     * @param array{testmode: bool, api_key: string, global_tax_category: string, global_tax_inclusive: bool, brand_id?: string, option_reader?: callable} $options Configuration options for API access and behavior.
      */
     public function __construct($options)
     {
@@ -46,8 +40,7 @@ class Dodo_Payments_API
         $this->global_tax_category = $options['global_tax_category'];
         $this->global_tax_inclusive = $options['global_tax_inclusive'];
         $this->brand_id = (string) ($options['brand_id'] ?? '');
-        $this->checkout_options = (array) ($options['checkout_options'] ?? array());
-        $this->feature_flags = (array) ($options['feature_flags'] ?? array());
+        $this->option_reader = $options['option_reader'] ?? null;
     }
 
     /**
@@ -403,7 +396,9 @@ class Dodo_Payments_API
         }
 
         // Flags the merchant set on the settings page override the plugin's own choices above.
-        $feature_flags = array_merge($feature_flags, $this->feature_flags);
+        if ($this->option_reader) {
+            $feature_flags = array_merge($feature_flags, Dodo_Payments_Checkout_Settings::feature_flag_overrides($this->option_reader));
+        }
 
         // ...except where that would produce a request Dodo rejects (400).
         if (!empty($feature_flags['require_phone_number'])) {
@@ -462,7 +457,9 @@ class Dodo_Payments_API
 
         // Store-wide options from the settings page go in underneath: anything derived
         // from the order itself wins over a store-wide setting.
-        $request = array_merge($this->checkout_options, $request);
+        if ($this->option_reader) {
+            $request = array_merge(Dodo_Payments_Checkout_Settings::build_request_options($this->option_reader), $request);
+        }
 
         // Dodo answers 422 to a payment method layout on a checkout that is not single-page.
         if (empty($request['feature_flags']['single_page'])) {
@@ -476,12 +473,20 @@ class Dodo_Payments_API
         // billing field is missing. Countries without postcodes or states would then never get
         // a payment page, so for such an order let the hosted page collect what is missing.
         if (!empty($request['confirm'])) {
-            $missing = Dodo_Payments_Checkout_Settings::missing_confirm_fields($order, !empty($request['minimal_address']));
+            // Dodo defaults minimal_address to true on single-page checkouts.
+            $minimal_address = isset($request['minimal_address']) ? !empty($request['minimal_address']) : !empty($request['feature_flags']['single_page']);
+            $missing = Dodo_Payments_Checkout_Settings::missing_confirm_fields($order, $minimal_address);
 
             if (!empty($missing)) {
                 unset($request['confirm']);
                 $this->log_debug('Order #' . $order->get_id() . ' is missing ' . implode(', ', $missing) . ', so its checkout session is not finalised up front');
             }
+        }
+
+        // A required phone the session does not carry cannot be finalised up front either, so let the
+        // hosted page ask for it.
+        if (!empty($request['confirm']) && !empty($request['feature_flags']['require_phone_number']) && empty($request['customer']['phone_number'])) {
+            unset($request['confirm']);
         }
 
         // Dodo also answers 422 to a required tax ID on a confirmed session that carries none, which would
@@ -514,6 +519,9 @@ class Dodo_Payments_API
             && str_contains(wp_remote_retrieve_body($res), 'phone_number')) {
             $this->log_debug('Dodo rejected the billing phone for order #' . $order->get_id() . ', retrying the checkout session without it');
             unset($request['customer']['phone_number']);
+            if (!empty($request['feature_flags']['require_phone_number'])) {
+                unset($request['confirm']); // Same as above: the hosted page must collect the phone.
+            }
             $res = $this->post('/checkouts', $request);
         }
 

@@ -903,21 +903,6 @@ class Dodo_Payments_Checkout_Settings
     // ---------------------------------------------------------------------
 
     /**
-     * Sanitizes a plain text option.
-     *
-     * @param mixed $value Raw posted value.
-     * @return string
-     */
-    public static function sanitize_text($value)
-    {
-        if (!is_string($value)) {
-            return '';
-        }
-
-        return trim(sanitize_text_field(wp_unslash($value)));
-    }
-
-    /**
      * Sanitizes a URL option, preserving the order placeholders.
      *
      * `esc_url_raw()` strips any character outside the set `esc_url()` permits,
@@ -973,7 +958,10 @@ class Dodo_Payments_Checkout_Settings
             && in_array(wp_parse_url($value, PHP_URL_SCHEME), array('http', 'https'), true);
 
         if (!$is_valid) {
-            throw new Exception(esc_html__('Redirect URLs must be valid http:// or https:// URLs.', 'dodo-payments-for-woocommerce'));
+            $message = __('Redirect URLs must be valid http:// or https:// URLs. The previous value was kept.', 'dodo-payments-for-woocommerce');
+            // WooCommerce swallows the exception below for payment gateways, so report it where it is shown.
+            self::add_error($message);
+            throw new Exception(esc_html($message));
         }
 
         return strtr($value, array_flip($sentinels));

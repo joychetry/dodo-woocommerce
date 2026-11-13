@@ -78,15 +78,9 @@ public function __construct()
 
     // Overlay checkout scripts
     add_action('wp_enqueue_scripts', array($this, 'enqueue_overlay_checkout_scripts'));
-    
-    // AJAX handler to clear checkout session URL
-    add_action('wp_ajax_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
-    add_action('wp_ajax_nopriv_dodo_clear_checkout_session', array($this, 'ajax_clear_checkout_session'));
 
     // AJAX: extend trial period for a subscription (admin only)
     add_action('wp_ajax_dodo_extend_trial_period', array($this, 'ajax_extend_trial_period'));
-    // Clear session after payment completion
-    add_action('woocommerce_thankyou_' . $this->id, array($this, 'clear_checkout_session_after_payment'), 5);
 
     // "Purchasing as a business" fields on the WooCommerce checkout.
     // Only registered when Tax ID Collection is enabled — otherwise the
@@ -110,8 +104,7 @@ private function init_dodo_payments_api()
         'global_tax_category' => $this->global_tax_category,
         'global_tax_inclusive' => $this->global_tax_inclusive,
         'brand_id' => $this->brand_id,
-        'checkout_options' => Dodo_Payments_Checkout_Settings::build_request_options(array($this, 'get_option')),
-        'feature_flags' => Dodo_Payments_Checkout_Settings::feature_flag_overrides(array($this, 'get_option')),
+        'option_reader' => array($this, 'get_option'),
     ));
 }
 

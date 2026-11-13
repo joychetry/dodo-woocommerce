@@ -144,27 +144,8 @@ public function enqueue_overlay_checkout_scripts()
         array(
             'checkoutUrl' => $checkout_session_url,
             'mode' => $this->testmode ? 'test' : 'live',
-            'ajaxUrl' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('dodo_checkout_overlay'),
         )
     );
-}
-
-/**
- * AJAX handler to clear checkout session URL from WooCommerce session
- *
- * @return void
- * @since 0.5.0
- */
-public function ajax_clear_checkout_session()
-{
-    check_ajax_referer('dodo_checkout_overlay', 'nonce');
-
-    if (WC()->session) {
-        WC()->session->__unset('dodo_checkout_session_url');
-    }
-
-    wp_send_json_success();
 }
 
 /**
@@ -206,20 +187,6 @@ public function ajax_extend_trial_period()
         __('Trial extended by %d days.', 'dodo-payments-for-woocommerce'),
         $days
     )));
-}
-
-/**
- * Clears checkout session URL after payment completion
- *
- * @param int $order_id Order ID.
- * @return void
- * @since 0.5.0
- */
-public function clear_checkout_session_after_payment($order_id)
-{
-    if (WC()->session) {
-        WC()->session->__unset('dodo_checkout_session_url');
-    }
 }
 
 /**
@@ -502,9 +469,8 @@ public function do_payment($order)
         // Store the session ID for future reference
         $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
 
-        // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
+        // If overlay checkout is enabled, redirect to the checkout page, which opens the overlay.
         if ($this->opens_overlay_checkout()) {
-            $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
             $order->save();
 
             $order->add_order_note(
