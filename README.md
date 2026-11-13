@@ -2,6 +2,14 @@
 
 A WooCommerce payment gateway plugin that allows you to accept payments through Dodo Payments.
 
+## About this fork
+
+This plugin started as a fork of the official [dodopayments/dodo-woocommerce](https://github.com/dodopayments/dodo-woocommerce) plugin. It is now maintained independently by [Classic Monks](https://classicmonks.com) and no longer tracks the upstream repository.
+
+- It is not an official Dodo Payments product, and Dodo Payments does not support it.
+- It has diverged from upstream. For example, it adds B2B checkout fields, invoices, and filing products and orders under a selected Dodo brand.
+- The original code is GPL v3 and copyright its authors. This fork keeps the same license.
+
 ## Description
 
 Dodo Payments for WooCommerce enables you to accept payments from your customers using Dodo Payments as a payment method. The plugin integrates seamlessly with your WooCommerce store and provides a secure, reliable merchant of record solution.
@@ -97,7 +105,7 @@ The plugin provides a webhook endpoint for payment status updates. Use the URL a
 
 ## Support
 
-For support, please contact Dodo Payments support team or visit the [Dodo Payments website](https://dodopayments.com).
+This fork is maintained by Classic Monks. Report problems with the plugin on [GitHub](https://github.com/joychetry/dodo-woocommerce/issues). For questions about your Dodo Payments account, payouts, or API keys, contact [Dodo Payments](https://dodopayments.com).
 
 ## License
 
