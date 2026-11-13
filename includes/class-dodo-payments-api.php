@@ -372,9 +372,9 @@ class Dodo_Payments_API
             $request['cancel_url'] = $cancel_url;
         }
 
-        // Add discount code if provided
+        // `discount_code` is deprecated on checkout sessions in favour of the stackable `discount_codes`.
         if ($dodo_discount_code) {
-            $request['discount_code'] = $dodo_discount_code;
+            $request['discount_codes'] = array($dodo_discount_code);
         }
 
         // Configure feature flags following Dodo best practices
@@ -387,13 +387,10 @@ class Dodo_Payments_API
             'allow_currency_selection' => false,
         );
 
-        // Hide the promo-code field on Dodo's checkout (coupons are applied in WooCommerce),
-        // but keep it enabled when a coupon is pre-applied: Dodo rejects `discount_code`
-        // outright when allow_discount_code is false.
-        if (!$dodo_discount_code) {
-            $feature_flags['allow_discount_code'] = false;
-        }
-        
+        // Hide the promo-code field on Dodo's checkout: coupons are applied in WooCommerce.
+        // A code passed in `discount_codes` still applies when the field is hidden (Dodo docs).
+        $feature_flags['allow_discount_code'] = false;
+
         if ($enable_tax_id_collection) {
             $feature_flags['allow_tax_id'] = true;
         }
@@ -408,10 +405,7 @@ class Dodo_Payments_API
         // Flags the merchant set on the settings page override the plugin's own choices above.
         $feature_flags = array_merge($feature_flags, $this->feature_flags);
 
-        // ...except where that would produce a request Dodo rejects.
-        if ($dodo_discount_code) {
-            $feature_flags['allow_discount_code'] = true;
-        }
+        // ...except where that would produce a request Dodo rejects (400).
         if (!empty($feature_flags['require_phone_number'])) {
             $feature_flags['allow_phone_number_collection'] = true;
         }
@@ -470,19 +464,30 @@ class Dodo_Payments_API
         // from the order itself wins over a store-wide setting.
         $request = array_merge($this->checkout_options, $request);
 
-        // `confirm` makes Dodo settle every detail up front, so a missing billing field is a
-        // rejected session instead of a prompt on the hosted page. Dodo's error does not name
-        // the field, so check first and say which ones are missing.
+        // Dodo answers 422 to a payment method layout on a checkout that is not single-page.
+        if (empty($request['feature_flags']['single_page'])) {
+            unset($request['customization']['payment_method_layout']);
+            if (empty($request['customization'])) {
+                unset($request['customization']);
+            }
+        }
+
+        // `confirm` makes Dodo settle every detail up front and reject the session (422) when a
+        // billing field is missing. Countries without postcodes or states would then never get
+        // a payment page, so for such an order let the hosted page collect what is missing.
         if (!empty($request['confirm'])) {
             $missing = Dodo_Payments_Checkout_Settings::missing_confirm_fields($order, !empty($request['minimal_address']));
 
             if (!empty($missing)) {
-                throw new Exception(esc_html(sprintf(
-                    /* translators: %s: comma-separated list of missing billing fields */
-                    __('Failed to create checkout session: "Finalise Details At Checkout" is enabled but the order is missing %s. Either collect these fields at your WooCommerce checkout or disable that setting.', 'dodo-payments-for-woocommerce'),
-                    implode(', ', $missing)
-                )));
+                unset($request['confirm']);
+                $this->log_debug('Order #' . $order->get_id() . ' is missing ' . implode(', ', $missing) . ', so its checkout session is not finalised up front');
             }
+        }
+
+        // Dodo also answers 422 to a required tax ID on a confirmed session that carries none, which would
+        // block every customer buying as an individual.
+        if (!empty($request['confirm']) && empty($request['tax_id'])) {
+            unset($request['feature_flags']['require_tax_id']);
         }
 
         /**

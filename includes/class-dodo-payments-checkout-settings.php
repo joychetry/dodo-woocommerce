@@ -59,10 +59,8 @@ class Dodo_Payments_Checkout_Settings
      * `confirm` tells the API to settle every detail at session-creation time
      * instead of letting the hosted page collect what is missing, so anything
      * absent from the WooCommerce order becomes a hard error rather than a
-     * prompt. `minimal_address` narrows the address portion to the zipcode --
-     * it also relaxes the hosted page's own collection independently of
-     * `confirm`, despite the API reference describing it as conditional on it,
-     * but only its effect on this precondition check matters here.
+     * prompt. Without `minimal_address` the API wants country, state, city,
+     * street and zipcode; with it, only country and zipcode.
      *
      * @param bool $minimal_address Whether only the zipcode is required.
      * @return array<string, string> Getter method name => admin-facing label.
@@ -78,6 +76,7 @@ class Dodo_Payments_Checkout_Settings
         if (!$minimal_address) {
             $fields['get_billing_address_1'] = __('Street address', 'dodo-payments-for-woocommerce');
             $fields['get_billing_city'] = __('Town / City', 'dodo-payments-for-woocommerce');
+            $fields['get_billing_state'] = __('State / County', 'dodo-payments-for-woocommerce');
         }
 
         return $fields;
@@ -167,6 +166,24 @@ class Dodo_Payments_Checkout_Settings
             'samsung_pay', 'satispay', 'seicomart', 'sepa', 'sepa_bank_transfer',
             'seven_eleven', 'sofort', 'swish', 'touch_n_go', 'trustly', 'twint', 'upi_collect',
             'upi_intent', 'venmo', 'viet_qr', 'vipps', 'walley', 'we_chat_pay', 'zip',
+        );
+    }
+
+    /**
+     * Languages `customization.force_language` supports, per the Checkout Sessions guide.
+     *
+     * Names are in their own language, so they are not translated.
+     *
+     * @return array<string, string> Language code => name.
+     */
+    public static function languages()
+    {
+        return array(
+            'ar' => 'العربية', 'ca' => 'Català', 'de' => 'Deutsch', 'en' => 'English', 'es' => 'Español',
+            'fr' => 'Français', 'he' => 'עברית', 'hr' => 'Hrvatski', 'id' => 'Bahasa Indonesia', 'it' => 'Italiano',
+            'ja' => '日本語', 'ka' => 'ქართული', 'ko' => '한국어', 'ms' => 'Bahasa Melayu', 'nl' => 'Nederlands',
+            'pl' => 'Polski', 'pt' => 'Português', 'ro' => 'Română', 'ru' => 'Русский', 'sr' => 'Српски',
+            'sv' => 'Svenska', 'th' => 'ไทย', 'tr' => 'Türkçe', 'zh' => '中文',
         );
     }
 
@@ -286,6 +303,11 @@ class Dodo_Payments_Checkout_Settings
             $payment_methods[$slug] = self::payment_method_label($slug);
         }
 
+        $languages = array('' => __('Customer\'s browser language (default)', 'dodo-payments-for-woocommerce'));
+        foreach (self::languages() as $code => $name) {
+            $languages[$code] = $name . ' (' . $code . ')';
+        }
+
         $schema = array();
 
         // -----------------------------------------------------------------
@@ -370,12 +392,11 @@ class Dodo_Payments_Checkout_Settings
             'path' => 'customization.force_language',
             'form' => array(
                 'title' => __('Force Language', 'dodo-payments-for-woocommerce'),
-                'type' => 'text',
+                'type' => 'select',
                 'default' => '',
-                'sanitize_callback' => array(__CLASS__, 'sanitize_language'),
                 'desc_tip' => false,
-                'placeholder' => __('Customer\'s own language', 'dodo-payments-for-woocommerce'),
-                'description' => __('A language tag such as <code>de</code> or <code>pt-BR</code>. Leave empty to let Dodo Payments choose.', 'dodo-payments-for-woocommerce'),
+                'options' => $languages,
+                'description' => __('Show the hosted checkout in one language for every customer. By default it follows the customer\'s browser language.', 'dodo-payments-for-woocommerce'),
             ),
         );
 
@@ -389,7 +410,7 @@ class Dodo_Payments_Checkout_Settings
                 'desc_tip' => false,
                 'options' => $tristate,
                 'description' => self::with_api_default(
-                    __('Show the order summary alongside the payment form.', 'dodo-payments-for-woocommerce'),
+                    __('Show the order summary opened by default. On wide screens the summary stays visible either way.', 'dodo-payments-for-woocommerce'),
                     true
                 ),
             ),
@@ -408,6 +429,22 @@ class Dodo_Payments_Checkout_Settings
                     __('Show the on-demand badge on mandate-based subscriptions.', 'dodo-payments-for-woocommerce'),
                     true
                 ),
+            ),
+        );
+
+        $schema['payment_method_layout'] = array(
+            'path' => 'customization.payment_method_layout',
+            'form' => array(
+                'title' => __('Payment Method Layout', 'dodo-payments-for-woocommerce'),
+                'type' => 'select',
+                'default' => '',
+                'desc_tip' => false,
+                'options' => array(
+                    '' => __('Default', 'dodo-payments-for-woocommerce'),
+                    'accordion' => __('Accordion (one row for each method)', 'dodo-payments-for-woocommerce'),
+                    'tabs' => __('Tabs (one tab for each method)', 'dodo-payments-for-woocommerce'),
+                ),
+                'description' => __('How the payment methods are laid out. Only used when "Single-Page Checkout" is enabled under Checkout Feature Flags. Default: Accordion.', 'dodo-payments-for-woocommerce'),
             ),
         );
 
@@ -432,7 +469,7 @@ class Dodo_Payments_Checkout_Settings
                 'desc_tip' => false,
                 'class' => 'wc-enhanced-select',
                 'options' => $payment_methods,
-                'description' => __('Select none to accept every method enabled on your Dodo Payments account. Selecting a method your account does not support will cause checkout to fail.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Customers never see a method that is not in this list; a listed method still only shows where it is available. Select none to accept every method enabled on your Dodo Payments account. If you restrict the list, always include Credit and Debit as a fallback: checkout fails when none of the selected methods is available.', 'dodo-payments-for-woocommerce'),
             ),
         );
 
@@ -500,7 +537,7 @@ class Dodo_Payments_Checkout_Settings
                 'desc_tip' => false,
                 'options' => $tristate,
                 'description' => self::with_api_default(
-                    __('Finalise the order\'s details when the checkout session is created, rather than letting the hosted page collect what is missing. <strong>Only enable this if your WooCommerce checkout collects the customer\'s full billing address.</strong> If any required detail is missing, Dodo Payments rejects the session and the customer sees a checkout error instead of a payment page.', 'dodo-payments-for-woocommerce'),
+                    __('Finalise the order\'s details when the checkout session is created, rather than letting the hosted page collect what is missing. It needs country, state, city, street and postcode on every order (only country and postcode with "Minimal Address"). An order that is missing one of them is sent without this option, so the hosted page collects the rest. A finalised checkout link expires after 15 minutes instead of 24 hours.', 'dodo-payments-for-woocommerce'),
                     false
                 ),
             ),
@@ -516,7 +553,7 @@ class Dodo_Payments_Checkout_Settings
                 'desc_tip' => false,
                 'options' => $tristate,
                 'description' => self::with_api_default(
-                    __('Ask for only the country and, where tax rules require it, the ZIP or postal code. This changes what the hosted checkout asks the customer for; the plugin still sends the full billing address WooCommerce already holds. Works on its own -- the API reference ties this to "Finalise Details At Checkout", but in practice it applies either way.', 'dodo-payments-for-woocommerce'),
+                    __('Ask for only the country and, where tax rules require it, the ZIP or postal code, instead of the full billing address. Turned on automatically by "Single-Page Checkout".', 'dodo-payments-for-woocommerce'),
                     false
                 ),
             ),
@@ -531,7 +568,7 @@ class Dodo_Payments_Checkout_Settings
                 'type' => 'title',
                 'description' => sprintf(
                     /* translators: %d: maximum number of custom fields */
-                    __('Ask customers up to %d additional questions on the hosted checkout. Answers are recorded against the checkout session in your Dodo Payments dashboard; they are not currently copied onto the WooCommerce order.', 'dodo-payments-for-woocommerce'),
+                    __('Ask customers up to %d additional questions on the hosted checkout. Answers are added to the WooCommerce order as an order note once the payment is confirmed, and are also kept in your Dodo Payments dashboard.', 'dodo-payments-for-woocommerce'),
                     self::MAX_CUSTOM_FIELDS
                 ),
             ),
@@ -873,26 +910,6 @@ class Dodo_Payments_Checkout_Settings
         }
 
         return trim(sanitize_text_field(wp_unslash($value)));
-    }
-
-    /**
-     * Sanitizes the forced language, which must be a BCP 47-style language tag.
-     *
-     * The value is passed through to the API, so the documented shape (`de`,
-     * `pt-BR`) is enforced here instead of accepting arbitrary text.
-     *
-     * @param mixed $value Raw posted value.
-     * @return string
-     */
-    public static function sanitize_language($value)
-    {
-        $value = self::sanitize_text($value);
-
-        if ('' === $value) {
-            return '';
-        }
-
-        return preg_match('/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/', $value) ? $value : '';
     }
 
     /**
@@ -1302,6 +1319,30 @@ class Dodo_Payments_Checkout_Settings
         );
     }
 
+    /**
+     * Formats the customer's answers to the extra checkout questions for an order note.
+     *
+     * @param mixed                            $responses `custom_field_responses` from a payment payload.
+     * @param array<int, array<string, mixed>> $questions Saved question definitions, for their labels.
+     * @return string[] One "Label: answer" line per answered question.
+     */
+    public static function format_custom_field_responses($responses, $questions)
+    {
+        $labels = is_array($questions) ? array_column($questions, 'label', 'key') : array();
+        $lines = array();
+
+        foreach (is_array($responses) ? $responses : array() as $response) {
+            if (!isset($response['key'], $response['value']) || !is_scalar($response['value']) || '' === (string) $response['value']) {
+                continue;
+            }
+
+            $key = sanitize_text_field((string) $response['key']);
+            $lines[] = (isset($labels[$key]) ? $labels[$key] : $key) . ': ' . sanitize_text_field((string) $response['value']);
+        }
+
+        return $lines;
+    }
+
     // ---------------------------------------------------------------------
     // Feature flags
     // ---------------------------------------------------------------------
@@ -1336,8 +1377,8 @@ class Dodo_Payments_Checkout_Settings
             ),
             'allow_discount_code' => array(
                 'title' => __('Allow Discount Codes', 'dodo-payments-for-woocommerce'),
-                'description' => __('Let customers enter a Dodo Payments discount code on the hosted checkout. A WooCommerce coupon on the order is passed along either way.', 'dodo-payments-for-woocommerce'),
-                'default' => __('Disabled, unless the order carries a WooCommerce coupon', 'dodo-payments-for-woocommerce'),
+                'description' => __('Let customers enter or change a Dodo Payments discount code on the hosted checkout. A WooCommerce coupon on the order is applied either way.', 'dodo-payments-for-woocommerce'),
+                'default' => __('Disabled, so coupons are only entered in WooCommerce', 'dodo-payments-for-woocommerce'),
             ),
             'allow_tax_id' => array(
                 'title' => __('Allow Tax ID', 'dodo-payments-for-woocommerce'),
@@ -1346,7 +1387,7 @@ class Dodo_Payments_Checkout_Settings
             ),
             'require_tax_id' => array(
                 'title' => __('Require Tax ID', 'dodo-payments-for-woocommerce'),
-                'description' => __('Customers who check out as a business must give a tax ID (VAT or GST number). Customers who buy as an individual are not affected. Turns on "Allow Tax ID".', 'dodo-payments-for-woocommerce'),
+                'description' => __('Customers who check out as a business must give a tax ID (VAT or GST number). Customers who buy as an individual are not affected. Turns on "Allow Tax ID". Ignored on orders without a tax ID when "Finalise Details At Checkout" is enabled.', 'dodo-payments-for-woocommerce'),
                 'default' => $disabled,
             ),
             'allow_phone_number_collection' => array(
@@ -1361,17 +1402,17 @@ class Dodo_Payments_Checkout_Settings
             ),
             'require_cardholder_name' => array(
                 'title' => __('Require Cardholder Name', 'dodo-payments-for-woocommerce'),
-                'description' => __('Customers paying by card must give the name on the card.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Customers paying by card must give the name on the card. Apple Pay and Google Pay ask for the payer name too.', 'dodo-payments-for-woocommerce'),
                 'default' => $disabled,
             ),
             'single_page' => array(
                 'title' => __('Single-Page Checkout', 'dodo-payments-for-woocommerce'),
-                'description' => __('Show the customer details and the payment form on one page instead of two steps.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Show the customer details and the payment form on one page instead of two steps. Also turns on "Minimal Address" unless you set it yourself.', 'dodo-payments-for-woocommerce'),
                 'default' => $disabled,
             ),
             'redirect_immediately' => array(
                 'title' => __('Redirect Immediately', 'dodo-payments-for-woocommerce'),
-                'description' => __('Send customers back to your store as soon as the payment completes, without showing the Dodo Payments confirmation screen.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Skip the Dodo Payments success page and send customers straight to your return URL when the payment completes.', 'dodo-payments-for-woocommerce'),
                 'default' => $disabled,
             ),
             'allow_editing_addons' => array(

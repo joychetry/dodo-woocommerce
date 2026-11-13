@@ -188,6 +188,20 @@ private function handle_payment_webhook($payload, $status)
         return;
     }
 
+    // Answers to the extra checkout questions, noted once per order (webhooks are redelivered).
+    if (!empty($payload['data']['custom_field_responses']) && !$order->get_meta('_dodo_custom_field_responses')) {
+        $answers = Dodo_Payments_Checkout_Settings::format_custom_field_responses(
+            $payload['data']['custom_field_responses'],
+            $this->get_option(Dodo_Payments_Checkout_Settings::PREFIX . 'custom_fields')
+        );
+
+        if ($answers) {
+            $order->update_meta_data('_dodo_custom_field_responses', $answers);
+            $order->save();
+            $order->add_order_note(__('Dodo Payments checkout answers:', 'dodo-payments-for-woocommerce') . "\n" . implode("\n", $answers));
+        }
+    }
+
     switch ($status) {
         case 'succeeded':
             // ─── Trial payment guard ─────────────────────────────────────────────
