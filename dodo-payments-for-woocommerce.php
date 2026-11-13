@@ -64,6 +64,13 @@ require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-invoices.p
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-b2b.php';
 require_once DODO_PAYMENTS_PLUGIN_DIR . 'includes/trait-dodo-payments-webhooks.php';
 
+// WooCommerce only saves a settings section when the posted form carries its own `save`
+// button, so a submission from the "Reset checkout options" button has to be let through.
+add_filter('woocommerce_save_settings_checkout_dodo_payments', function ($save) {
+    // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Presence check only; WC_Admin_Settings::save() verifies the nonce.
+    return $save || !empty($_POST[Dodo_Payments_Checkout_Settings::RESET_FIELD]);
+});
+
 // Create database tables on plugin activation
 register_activation_hook(__FILE__, function () {
     Dodo_Payments_Product_DB::create_table();
