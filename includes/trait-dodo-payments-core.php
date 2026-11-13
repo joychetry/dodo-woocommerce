@@ -391,7 +391,7 @@ public function init_form_fields()
             'label' => __('Allow customers to provide their Tax ID / VAT number during checkout', 'dodo-payments-for-woocommerce'),
             'default' => 'no',
             'desc_tip' => false,
-            'description' => __('When enabled, customers will be able to enter their business Tax ID or VAT number on the Dodo Payments checkout page. This is useful for B2B transactions and tax compliance. Uses the modern Checkout Sessions API.', 'dodo-payments-for-woocommerce'),
+            'description' => __('Adds a "Purchasing as a business" option with company and Tax ID / VAT number fields to your checkout, and lets customers enter a tax ID on the Dodo Payments checkout page. Useful for B2B sales and tax compliance.', 'dodo-payments-for-woocommerce'),
         ),
         'overlay_checkout_title' => array(
             'title' => __('Overlay Checkout', 'dodo-payments-for-woocommerce'),
@@ -404,7 +404,7 @@ public function init_form_fields()
             'label' => __('Use overlay checkout SDK for embedded checkout experience', 'dodo-payments-for-woocommerce'),
             'default' => 'no',
             'desc_tip' => false,
-            'description' => __('When enabled, customers will complete checkout in an overlay modal without leaving your site. Requires Checkout Sessions API (automatically enabled when Tax ID Collection is enabled).', 'dodo-payments-for-woocommerce'),
+            'description' => __('When enabled, customers complete checkout in a pop-up on your checkout page instead of being redirected to Dodo Payments.', 'dodo-payments-for-woocommerce'),
         ),
     );
 

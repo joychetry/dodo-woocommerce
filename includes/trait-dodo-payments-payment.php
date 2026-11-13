@@ -1,6 +1,6 @@
 <?php
 /**
- * One-time payment flow: checkout sessions, legacy payment creation, product and coupon sync, and overlay checkout.
+ * Payment flow: checkout sessions, product and coupon sync, and overlay checkout.
  *
  * @package Dodo_Payments_For_WooCommerce
  */
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * One-time payment flow: checkout sessions, legacy payment creation, product and coupon sync, and overlay checkout.
+ * Payment flow: checkout sessions, product and coupon sync, and overlay checkout.
  *
  * @since 0.7.0
  */
@@ -440,54 +440,36 @@ public function do_payment($order)
             }
         }
 
-        // Use checkout sessions API when tax ID collection is enabled OR overlay checkout is enabled
-        // This provides a modern checkout experience with additional features
-        if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
-            // Skip-trial only on re-pay of an existing order. A fresh checkout has no
-            // _dodo_checkout_session_id yet (it is written at the end of this method),
-            // so trial stays intact; once the order has been through Dodo once (e.g. a
-            // pending trial order re-paid from the orders table), suppress the product's
-            // trial so the customer pays the order total instead of a confusing $0.
-            $already_in_dodo = (bool) $order->get_meta('_dodo_checkout_session_id');
-            $skip_trial = apply_filters(
-                'dodo_payments_skip_trial',
-                (bool) ($order->get_total() > 0 && $already_in_dodo && $contains_subscription),
+        // Skip-trial only on re-pay of an existing order. A fresh checkout has no
+        // _dodo_checkout_session_id yet (it is written at the end of this method),
+        // so trial stays intact; once the order has been through Dodo once (e.g. a
+        // pending trial order re-paid from the orders table), suppress the product's
+        // trial so the customer pays the order total instead of a confusing $0.
+        $already_in_dodo = (bool) $order->get_meta('_dodo_checkout_session_id');
+        $skip_trial = apply_filters(
+            'dodo_payments_skip_trial',
+            (bool) ($order->get_total() > 0 && $already_in_dodo && $contains_subscription),
+            $order
+        );
+        $prefix = Dodo_Payments_Checkout_Settings::PREFIX;
+        $response = $this->dodo_payments_api->create_checkout_session(
+            $order,
+            $synced_products,
+            $dodo_discount_code,
+            Dodo_Payments_Checkout_Settings::resolve_return_url(
+                $this->get_option($prefix . 'return_url'),
+                $this->get_return_url($order),
                 $order
-            );
-            $prefix = Dodo_Payments_Checkout_Settings::PREFIX;
-            $response = $this->dodo_payments_api->create_checkout_session(
-                $order,
-                $synced_products,
-                $dodo_discount_code,
-                Dodo_Payments_Checkout_Settings::resolve_return_url(
-                    $this->get_option($prefix . 'return_url'),
-                    $this->get_return_url($order),
-                    $order
-                ),
-                $this->enable_tax_id_collection,
-                null,
-                $skip_trial,
-                Dodo_Payments_Checkout_Settings::resolve_cancel_url(
-                    $this->get_option($prefix . 'cancel_url_mode'),
-                    $this->get_option($prefix . 'cancel_url_custom'),
-                    $order
-                )
-            );
-        } else {
-            $response = $contains_subscription
-                ? $this->dodo_payments_api->create_subscription(
-                    $order,
-                    $synced_products,
-                    $dodo_discount_code,
-                    $this->get_return_url($order)
-                )
-                : $this->dodo_payments_api->create_payment(
-                    $order,
-                    $synced_products,
-                    $dodo_discount_code,
-                    $this->get_return_url($order)
-                );
-        }
+            ),
+            $this->enable_tax_id_collection,
+            null,
+            $skip_trial,
+            Dodo_Payments_Checkout_Settings::resolve_cancel_url(
+                $this->get_option($prefix . 'cancel_url_mode'),
+                $this->get_option($prefix . 'cancel_url_custom'),
+                $order
+            )
+        );
     } catch (Exception $e) {
         $error_message = $e->getMessage();
 
@@ -515,143 +497,52 @@ public function do_payment($order)
         return array('result' => 'failure');
     }
 
-    // Handle both checkout session and legacy payment/subscription responses
-    if ($this->enable_tax_id_collection || $this->enable_overlay_checkout) {
-        // Handle Checkout Session response
-        if (isset($response['checkout_url']) && isset($response['session_id'])) {
-            // Store the session ID for future reference
-            $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
+    // Handle Checkout Session response
+    if (isset($response['checkout_url']) && isset($response['session_id'])) {
+        // Store the session ID for future reference
+        $order->update_meta_data('_dodo_checkout_session_id', $response['session_id']);
 
-            // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
-            if ($this->opens_overlay_checkout()) {
-                $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
-                $order->save();
+        // If overlay checkout is enabled, store checkout URL and redirect to checkout page.
+        if ($this->opens_overlay_checkout()) {
+            $order->update_meta_data('_dodo_checkout_session_url', $response['checkout_url']);
+            $order->save();
 
-                $order->add_order_note(
-                    sprintf(
-                        // translators: %1$s: Session ID
-                        __('Checkout session created in Dodo Payments: %1$s (Overlay checkout enabled)', 'dodo-payments-for-woocommerce'),
-                        $response['session_id']
-                    )
-                );
-
-                // Redirect to checkout page where overlay will open
-                return array(
-                    'result' => 'success',
-                    'redirect' => add_query_arg('dodo_checkout_session_url', urlencode($response['checkout_url']), wc_get_checkout_url())
-                );
-            } else {
-                // Standard redirect to external checkout URL
-                $order->save();
-
-                $order->add_order_note(
-                    sprintf(
-                        // translators: %1$s: Session ID
-                        __('Checkout session created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                        $response['session_id']
-                    )
-                );
-
-                return array(
-                    'result' => 'success',
-                    'redirect' => $response['checkout_url']
-                );
-            }
-        } else {
             $order->add_order_note(
-                __('Failed to create checkout session in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
+                sprintf(
+                    // translators: %1$s: Session ID
+                    __('Checkout session created in Dodo Payments: %1$s (Overlay checkout enabled)', 'dodo-payments-for-woocommerce'),
+                    $response['session_id']
+                )
             );
-            wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
-            return array('result' => 'failure');
+
+            // Redirect to checkout page where overlay will open
+            return array(
+                'result' => 'success',
+                'redirect' => add_query_arg('dodo_checkout_session_url', urlencode($response['checkout_url']), wc_get_checkout_url())
+            );
+        } else {
+            // Standard redirect to external checkout URL
+            $order->save();
+
+            $order->add_order_note(
+                sprintf(
+                    // translators: %1$s: Session ID
+                    __('Checkout session created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                    $response['session_id']
+                )
+            );
+
+            return array(
+                'result' => 'success',
+                'redirect' => $response['checkout_url']
+            );
         }
     } else {
-        // Handle legacy payment and subscription responses
-
-        if ($contains_subscription) {
-            if (isset($response['payment_link'])) {
-                if (isset($response['subscription_id'])) {
-                    // Save the subscription mapping
-                    $subscription_found = false;
-
-                    if (class_exists('WC_Subscriptions') && function_exists('wcs_get_subscriptions_for_order')) {
-                        $subscription_order = wcs_get_subscriptions_for_order($order->get_id());
-                        if (!empty($subscription_order)) {
-                            $subscription_found = reset($subscription_order);
-                        }
-                    } else {
-                        // Check for License Monks subscriptions
-                        $lm_subscriptions = wc_get_orders(array(
-                            'type'   => 'lm_subscription',
-                            'parent' => $order->get_id(),
-                            'limit'  => 1,
-                        ));
-                        if (!empty($lm_subscriptions)) {
-                            $subscription_found = reset($lm_subscriptions);
-                        }
-                    }
-
-                    if ($subscription_found) {
-                        Dodo_Payments_Subscription_DB::save_mapping($subscription_found->get_id(), $response['subscription_id']);
-
-                        $order->add_order_note(
-                            sprintf(
-                                // translators: %1$s: Subscription ID
-                                __('Subscription created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                                $response['subscription_id']
-                            )
-                        );
-                    }
-                }
-
-                if (isset($response['payment_id'])) {
-                    // Save the payment mapping
-                    Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $response['payment_id']);
-
-                    $order->add_order_note(
-                        sprintf(
-                            // translators: %1$s: Payment ID
-                            __('Payment created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                            $response['payment_id']
-                        )
-                    );
-                }
-
-                return array(
-                    'result' => 'success',
-                    'redirect' => $response['payment_link']
-                );
-            } else {
-                $order->add_order_note(
-                    __('Failed to create subscription in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
-                );
-                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
-                return array('result' => 'failure');
-            }
-        } else {
-            if (isset($response['payment_link']) && isset($response['payment_id'])) {
-                // Save the payment mapping
-                Dodo_Payments_Payment_DB::save_mapping($order->get_id(), $response['payment_id']);
-
-                $order->add_order_note(
-                    sprintf(
-                        // translators: %1$s: Payment ID
-                        __('Payment created in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                        $response['payment_id']
-                    )
-                );
-
-                return array(
-                    'result' => 'success',
-                    'redirect' => $response['payment_link']
-                );
-            } else {
-                $order->add_order_note(
-                    __('Failed to create payment in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
-                );
-                wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
-                return array('result' => 'failure');
-            }
-        }
+        $order->add_order_note(
+            __('Failed to create checkout session in Dodo Payments: Invalid response', 'dodo-payments-for-woocommerce')
+        );
+        wc_add_notice(__('Dodo Payments: an unexpected error occured.', 'dodo-payments-for-woocommerce'), 'error');
+        return array('result' => 'failure');
     }
 }
 

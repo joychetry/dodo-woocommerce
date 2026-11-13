@@ -317,7 +317,7 @@ class Dodo_Payments_Checkout_Settings
             'form' => array(
                 'title' => __('Redirects', 'dodo-payments-for-woocommerce'),
                 'type' => 'title',
-                'description' => __('Where customers are sent when they finish or abandon the hosted Dodo Payments checkout. This and the sections below apply only to the Checkout Sessions API, which the plugin uses when Tax ID Collection or Overlay Checkout is enabled.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Where customers are sent when they finish or abandon the hosted Dodo Payments checkout.', 'dodo-payments-for-woocommerce'),
             ),
         );
 
@@ -1383,7 +1383,7 @@ class Dodo_Payments_Checkout_Settings
             'allow_tax_id' => array(
                 'title' => __('Allow Tax ID', 'dodo-payments-for-woocommerce'),
                 'description' => __('Let customers add a tax ID on the hosted checkout.', 'dodo-payments-for-woocommerce'),
-                'default' => $enabled,
+                'default' => __('Follows "Enable Tax ID Collection"', 'dodo-payments-for-woocommerce'),
             ),
             'require_tax_id' => array(
                 'title' => __('Require Tax ID', 'dodo-payments-for-woocommerce'),
