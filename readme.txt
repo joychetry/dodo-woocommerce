@@ -3,7 +3,7 @@ Contributors: classicmonks
 Tags: payments, woocommerce, dodo
 Requires at least: 7.1
 Tested up to: 7.1
-Stable tag: 1.3.0
+Stable tag: 1.3.1
 License: GPLv3 or later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -39,6 +39,13 @@ Dodo Payments for WooCommerce is a comprehensive payment solution that handles a
 Currently, we support credit card payments through Dodo Payment Gateway.
 
 == Changelog ==
+
+= 1.3.1 =
+* Fix: A License Monks subscription cancelled in Dodo Payments (dashboard, customer portal, dispute or end of a grace period) is now cancelled in WooCommerce too; it used to stay active with a working license
+* Fix: A subscription resumed in Dodo Payments after a pause becomes active again in WooCommerce
+* Fix: Changing a subscription from pending cancellation back to active removes the scheduled cancellation in Dodo Payments
+* Fix: License Monks plans that bill every 2 or more periods and expire after a set number of payments get the right total length in Dodo Payments
+* Fix: The License Monks billing period end, and with it the license expiry, follows the next billing date in Dodo Payments after a renewal, resume, reactivation or plan change
 
 = 1.3.0 =
 * Change: Every checkout now uses the Dodo Payments Checkout Sessions API. Stores that had both Tax ID Collection and Overlay Checkout turned off move to the hosted checkout page, where the store currency is locked, the discount code field is hidden and a phone field is shown
