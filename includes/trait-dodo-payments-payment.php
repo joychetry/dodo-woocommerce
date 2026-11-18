@@ -800,6 +800,70 @@ private function sync_products($order)
             $is_subscription = true;
         }
 
+        // Use get_subtotal() (before coupon discounts) so the coupon
+        // is only applied once by Dodo, not double-counted here.
+        $item_subtotal = (float) $item->get_subtotal();
+
+        // Validate subtotal - skip if negative or invalid
+        if ($item_subtotal < 0) {
+            $order->add_order_note(
+                sprintf(
+                    // translators: %1$d: Product ID
+                    __('Invalid item subtotal detected for product %1$d, skipping sync.', 'dodo-payments-for-woocommerce'),
+                    $local_product_id
+                )
+            );
+            continue;
+        }
+
+        $effective_unit_price = $item_subtotal / max(1, $item->get_quantity());
+
+        // Compare with a threshold that accounts for floating-point precision.
+        // Using 0.001 as a safe threshold that works across most currencies
+        // (0.01 for USD-like currencies, JPY has no decimals).
+        if (abs($effective_unit_price - (float) $product->get_price()) > 0.001) {
+            // Upgrade scenario: create a temporary Dodo product with the prorated price
+            // instead of updating the original product's price in Dodo.
+            // Checked before the mapping lookup: Dodo charges a fixed-price product its
+            // own price and ignores the cart `amount`, so a product not yet mapped would
+            // otherwise be created, and charged, at the full catalog price.
+            try {
+                $temp_product = $this->dodo_payments_api->create_product_with_custom_price(
+                    sprintf(
+                        /* translators: %s: Product name */
+                        __('Upgrade: %s', 'dodo-payments-for-woocommerce'),
+                        $product->get_name()
+                    ),
+                    $this->dodo_payments_api->price_to_minor_units($effective_unit_price)
+                );
+
+                $order->add_order_note(
+                    sprintf(
+                        // translators: %1$s: Product name, %2$s: Amount
+                        __('Created temporary upgrade product in Dodo Payments for %1$s (prorated: %2$s)', 'dodo-payments-for-woocommerce'),
+                        $product->get_name(),
+                        wc_price($effective_unit_price)
+                    )
+                );
+            } catch (Exception $e) {
+                $order->add_order_note(
+                    sprintf(
+                        // translators: %1$s: Error message
+                        __('Failed to create upgrade product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                        $e->getMessage(),
+                    )
+                );
+                continue;
+            }
+
+            $mapped_products[] = array(
+                'product_id' => $temp_product['product_id'],
+                'quantity' => $item->get_quantity(),
+                'amount' => $this->dodo_payments_api->price_to_minor_units($effective_unit_price)
+            );
+            continue;
+        }
+
         // Check if product is already mapped
         $dodo_product_id = Dodo_Payments_Product_DB::get_dodo_product_id($local_product_id);
         $dodo_product = null;
@@ -813,83 +877,23 @@ private function sync_products($order)
                 Dodo_Payments_Product_DB::delete_mapping($local_product_id);
                 $dodo_product_id = null; // Force re-creation
             } else {
-                // Use get_subtotal() (before coupon discounts) so the coupon
-                // is only applied once by Dodo, not double-counted here.
-                $item_subtotal = (float) $item->get_subtotal();
-
-                // Validate subtotal - skip if negative or invalid
-                if ($item_subtotal < 0) {
+                // Normal flow: sync full product data to Dodo
+                try {
+                    if ($is_subscription) {
+                        $this->dodo_payments_api->update_subscription_product($dodo_product['product_id'], $product);
+                    } else {
+                        $this->dodo_payments_api->update_product($dodo_product['product_id'], $product);
+                    }
+                } catch (Exception $e) {
                     $order->add_order_note(
                         sprintf(
-                            // translators: %1$d: Product ID
-                            __('Invalid item subtotal detected for product %1$d, skipping sync.', 'dodo-payments-for-woocommerce'),
-                            $local_product_id
+                            // translators: %1$s: Error message
+                            __('Failed to update product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
+                            $e->getMessage(),
                         )
                     );
+
                     continue;
-                }
-
-                $item_qty = max(1, $item->get_quantity());
-                $effective_unit_price = $item_qty > 0 ? $item_subtotal / $item_qty : 0;
-                $catalog_price = (float) $product->get_price();
-
-                // Compare with a threshold that accounts for floating-point precision.
-                // Using 0.001 as a safe threshold that works across most currencies
-                // (0.01 for USD-like currencies, JPY has no decimals).
-                $is_price_modified = abs($effective_unit_price - $catalog_price) > 0.001;
-
-                if ($is_price_modified) {
-                    // Upgrade scenario: create a temporary Dodo product with the prorated price
-                    // instead of updating the original product's price in Dodo.
-                    // Product name includes order ID for traceability and cleanup.
-                    try {
-                        $temp_product = $this->dodo_payments_api->create_product_with_custom_price(
-                            sprintf(
-                                /* translators: %s: Product name */
-                                __('Upgrade: %s', 'dodo-payments-for-woocommerce'),
-                                $product->get_name()
-                            ),
-                            $this->dodo_payments_api->price_to_minor_units($effective_unit_price)
-                        );
-                        $dodo_product_id = $temp_product['product_id'];
-
-                        $order->add_order_note(
-                            sprintf(
-                                // translators: %1$s: Product name, %2$s: Amount
-                                __('Created temporary upgrade product in Dodo Payments for %1$s (prorated: %2$s)', 'dodo-payments-for-woocommerce'),
-                                $product->get_name(),
-                                wc_price($effective_unit_price)
-                            )
-                        );
-                    } catch (Exception $e) {
-                        $order->add_order_note(
-                            sprintf(
-                                // translators: %1$s: Error message
-                                __('Failed to create upgrade product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                                $e->getMessage(),
-                            )
-                        );
-                        continue;
-                    }
-                } else {
-                    // Normal flow: sync full product data to Dodo
-                    try {
-                        if ($is_subscription) {
-                            $this->dodo_payments_api->update_subscription_product($dodo_product['product_id'], $product);
-                        } else {
-                            $this->dodo_payments_api->update_product($dodo_product['product_id'], $product);
-                        }
-                    } catch (Exception $e) {
-                        $order->add_order_note(
-                            sprintf(
-                                // translators: %1$s: Error message
-                                __('Failed to update product in Dodo Payments: %1$s', 'dodo-payments-for-woocommerce'),
-                                $e->getMessage(),
-                            )
-                        );
-
-                        continue;
-                    }
                 }
             }
         }
