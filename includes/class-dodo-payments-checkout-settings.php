@@ -384,7 +384,7 @@ class Dodo_Payments_Checkout_Settings
                     'dark' => __('Dark', 'dodo-payments-for-woocommerce'),
                     'system' => __('Match the customer\'s device', 'dodo-payments-for-woocommerce'),
                 ),
-                'description' => __('Colour scheme the hosted checkout renders in. Overlay Checkout does not follow this setting.', 'dodo-payments-for-woocommerce'),
+                'description' => __('Colour scheme the hosted checkout and Overlay Checkout render in.', 'dodo-payments-for-woocommerce'),
             ),
         );
 
